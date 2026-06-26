@@ -146,7 +146,15 @@ if [ "$IS_BINARY" = 1 ]; then
     pass "bin/ not committed (binary built by release, never in source)"
   else fail "compiled artifacts appear tracked under bin/ — binary must be build-produced, gitignored"; fi
   wf=$(grep -rliE "build-plugin|plugin-release-kit|release-plugin\.yml" .github/workflows 2>/dev/null)
-  if [ -n "$wf" ]; then pass "release workflow wires the plugin-zip build ($(echo "$wf" | tr '\n' ' '))"
+  if [ -n "$wf" ]; then
+    # The reusable workflow runs with contents:write — require an immutable SHA
+    # pin (not a moving branch/tag), or a supply-chain change gains write access.
+    badpin=$(grep -hoE "plugin-release-kit/[^@\"' ]*@[^ \"')]+" $wf 2>/dev/null | sed -E 's/.*@//' | grep -vE '^[0-9a-f]{40}$' | grep -v '^$' || true)
+    if [ -n "$badpin" ]; then
+      fail "reusable release workflow not pinned to a commit SHA (mutable ref '$badpin' = CI/CD supply-chain risk)"
+    else
+      pass "release workflow wires + SHA-pins the plugin-zip build ($(echo "$wf" | tr '\n' ' '))"
+    fi
   else fail "no release workflow step builds/attaches the plugin zip — '/plugin install' would have no binary (wire the plugin-release-kit reusable workflow)"; fi
   if [ -f .mcp.json ]; then
     cmd=$(python3 -c "import json;d=json.load(open('.mcp.json'));s=d.get('mcpServers',{});print(next(iter(s.values()),{}).get('command','') if s else '')" 2>/dev/null)

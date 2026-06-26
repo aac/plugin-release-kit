@@ -53,7 +53,11 @@ on:
     tags: ['v*']
 jobs:
   release:
-    uses: aac/plugin-release-kit/.github/workflows/release-plugin.yml@v1
+    # SECURITY: this reusable workflow runs with `contents: write`. Pin it to an
+    # immutable commit SHA, never a moving branch/tag (`@main`/`@v1`), so a
+    # supply-chain change can't gain write access to your repo. Bump the SHA
+    # deliberately when adopting kit changes.
+    uses: aac/plugin-release-kit/.github/workflows/release-plugin.yml@<commit-sha>
     with:
       tool: <tool>   # optional; defaults to the repo name
     permissions:

@@ -47,7 +47,9 @@ release bundles one. The mechanism:
   multi-arch binaries cross-compiled into `bin/` plus a `uname`-based launcher.
 - `.github/workflows/release-plugin.yml` (this repo's reusable workflow) runs that
   step on every `vX.Y.Z` tag and attaches the zip to the GitHub Release. Each tool
-  repo's `release.yml` is a thin caller that `uses:` it. [check 7]
+  repo's `release.yml` is a thin caller that `uses:` it — **pinned to an
+  immutable commit SHA**, never a moving branch/tag, since the reusable workflow
+  runs with `contents: write` (CI/CD supply-chain hygiene). [check 7]
 - The binary is **never committed**; `bin/` is gitignored. [check 7]
 - `.mcp.json`'s command name equals the binary name, so the plugin-placed binary
   resolves on `$PATH`. [check 7]

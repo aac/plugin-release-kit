@@ -9,7 +9,8 @@
 #       tags: ['v*']
 #   jobs:
 #     release:
-#       uses: aac/plugin-release-kit/.github/workflows/release-plugin.yml@v1
+#       # Pin to an immutable commit SHA (this workflow runs with contents:write).
+#       uses: aac/plugin-release-kit/.github/workflows/release-plugin.yml@<commit-sha>
 #       with:
 #         tool: ask            # optional; defaults to the repo name
 #       permissions:
@@ -38,11 +39,6 @@ on:
         type: string
         required: false
         default: "1.25"
-      kit-ref:
-        description: "Ref of plugin-release-kit to use for build-plugin.sh"
-        type: string
-        required: false
-        default: "v1"
 
 jobs:
   release:
@@ -56,10 +52,13 @@ jobs:
           fetch-depth: 0
 
       - name: Checkout plugin-release-kit
+        # Pin to the exact commit of THIS reusable workflow (job_workflow_sha),
+        # so build-plugin.sh comes from the same immutable commit the caller
+        # pinned — not a mutable branch/tag that could drift under the SHA pin.
         uses: actions/checkout@v4
         with:
           repository: aac/plugin-release-kit
-          ref: ${{ inputs.kit-ref }}
+          ref: ${{ github.job_workflow_sha }}
           path: _kit
 
       - name: Set up Go
