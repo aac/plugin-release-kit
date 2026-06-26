@@ -139,14 +139,14 @@ The verifier's logic is public and must contain **zero personal data**:
 
 ## What's the maintainer's, not the agent's
 
-Two steps stay manual:
+- **Privacy repave — only when `check-history` flags leaked history.** Squashing/
+  recreating from a clean snapshot so old personal-data-bearing commits don't go
+  public. A one-time remediation for repos developed before the scrub discipline;
+  a tool built verifier-green from commit one never needs it.
+- **Flip to public** and announce — always a deliberate human call.
 
-- **Privacy repave** — squashing/recreating history from a clean snapshot so old
-  personal-data-bearing commits don't go public.
-- **Flip to public** and announce.
-
-Order: content pass (verifier green) → clean snapshot → recreate remote → push →
-flip public → announce.
+Order when a repave is needed: content pass (verifier green) → `check-history` →
+clean snapshot → recreate remote → push → flip public → announce.
 
 ## Shipping a tool — the release runbook
 
@@ -179,12 +179,21 @@ a tool that ships rarely).
    `<tool>-plugin.zip`, and the zip carries the multi-arch binary + launcher +
    `skills/` + `.claude-plugin` + `.codex-plugin` + `.mcp.json`.
 
-6. **HUMAN GATE (first public release only):** the privacy repave + flip-to-public
-   (see *What's the maintainer's* above). The agent surfaces these as asks and
-   stops; it does not repave history or change repo visibility itself.
+6. **History check (before a first public release):**
+   `<kit>/bin/check-history --repo .`. Clean (the normal case for a tool built
+   verifier-green from commit one) → no repave; go to 7. Leaks (a legacy repo
+   developed before the scrub discipline) → a **one-time privacy repave** is
+   needed (squash from a clean snapshot; see *What's the maintainer's*) — surface
+   it as an ask. The working-tree checks ([8]/[9]) stop new leaks at the source,
+   so this is remediation for the past, not a standing step.
 
-7. **Publish:** flip GoReleaser `draft: true → false` once the first tagged run is
+7. **HUMAN GATE — flip to public:** going public is a deliberate "ready for the
+   world" call. The agent surfaces it as an ask; it does not change repo
+   visibility itself (nor rewrite history when a repave is needed — both are
+   destructive on a published repo).
+
+8. **Publish:** flip GoReleaser `draft: true → false` once the first tagged run is
    validated end to end, then publish.
 
-For a still-private tool, steps 1–5 are the whole loop; the agent escalates step 6
-as an ask and stops there.
+For a still-private tool, steps 1–6 are the whole loop; the agent escalates the
+human gate (7) as an ask and stops there.

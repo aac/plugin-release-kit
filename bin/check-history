@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# check-history — scan a tool repo's FULL git history for leaked personal data.
+#
+# verify-release [8]/[9] catch leaks in the WORKING TREE (what ships now).
+# This catches leaks that exist in PAST commits — e.g. a repo developed/pushed
+# before the scrub discipline, where a personal path or private name was once
+# committed and later removed. The working tree can be clean while history is not.
+#
+# Use it to ANSWER "does this repo need a privacy-repave before going public?":
+#   exit 0  => history is clean; no repave needed.
+#   exit 1  => history carries leaks; repave (squash from a clean snapshot) first.
+#
+# Same privacy model as verify-release: generic path patterns are built in;
+# proper nouns come from an injected denylist, never hardcoded.
+#
+#   check-history [--repo <path>] [--denylist <file>]
+set -uo pipefail
+
+REPO="" DL=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo) REPO=$2; shift 2 ;;
+    --denylist) DL=$2; shift 2 ;;
+    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
+    *) echo "check-history: unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+[ -n "$REPO" ] || REPO=$(pwd)
+[ -e "$REPO/.git" ] || { echo "check-history: not a git repo: $REPO" >&2; exit 2; }
+[ -n "$DL" ] || DL="${PLUGIN_KIT_DENYLIST:-}"
+
+red=$'\033[31m'; grn=$'\033[32m'; ylw=$'\033[33m'; rst=$'\033[0m'
+[ -t 1 ] || { red=""; grn=""; ylw=""; rst=""; }
+
+ncommits=$(git -C "$REPO" rev-list --all --count 2>/dev/null || echo 0)
+printf '== check-history: %s ==  (%s commits)\n' "$REPO" "$ncommits"
+
+FOUND=0
+
+# Generic absolute home paths — never legitimate anywhere in history.
+ppat='/Users/[A-Za-z0-9._-]+|/home/[A-Za-z0-9._-]+'
+# Pickaxe over diffs: commits whose diff added/removed a matching line.
+phits=$(git -C "$REPO" log --all --format='  %h %ad %s' --date=short -G "$ppat" 2>/dev/null | head -20)
+if [ -n "$phits" ]; then
+  printf '%sLEAK%s personal/home paths appear in history (commits that touched them):\n' "$red" "$rst"
+  printf '%s\n' "$phits"
+  FOUND=1
+fi
+
+# Injected proper-noun denylist (exact strings via the -S pickaxe).
+if [ -n "$DL" ] && [ -f "$DL" ]; then
+  while IFS= read -r t; do
+    case "$t" in ''|\#*) continue ;; esac
+    h=$(git -C "$REPO" log --all --format='  %h %ad %s' --date=short -S "$t" 2>/dev/null | head -5)
+    if [ -n "$h" ]; then
+      printf '%sLEAK%s denylisted term %s appears in history:\n' "$red" "$rst" "\"$t\""
+      printf '%s\n' "$h"
+      FOUND=1
+    fi
+  done < "$DL"
+else
+  printf '%sWARN%s no denylist (--denylist or $PLUGIN_KIT_DENYLIST) — proper-noun history scan skipped\n' "$ylw" "$rst"
+fi
+
+echo
+if [ "$FOUND" = 0 ]; then
+  printf '%shistory is clean — no privacy-repave needed%s\n' "$grn" "$rst"
+  exit 0
+else
+  printf '%shistory carries leaks — repave (squash from a clean snapshot) before going public%s\n' "$red" "$rst"
+  exit 1
+fi
