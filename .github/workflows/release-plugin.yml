@@ -51,6 +51,20 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Checkout plugin-release-kit
+        # Pin to the exact commit of THIS reusable workflow (job_workflow_sha),
+        # so build-plugin.sh comes from the same immutable commit the caller
+        # pinned. Lands in _kit/ inside the workspace; the next step hides it
+        # from the tool's git status so GoReleaser sees a clean tree.
+        uses: actions/checkout@v4
+        with:
+          repository: aac/plugin-release-kit
+          ref: ${{ github.job_workflow_sha }}
+          path: _kit
+
+      - name: Hide _kit from the tool's git status
+        run: echo '/_kit/' >> .git/info/exclude
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -95,17 +109,13 @@ jobs:
           echo "OK: $bin executes (rc=$rc) — ad-hoc signature valid"
 
       - name: Build self-contained plugin zip
-        # Fetch build-plugin.sh from the SAME pinned commit as this workflow
-        # (job_workflow_sha) into RUNNER_TEMP — OUTSIDE the tool working tree, so
-        # GoReleaser (which already ran above) saw a clean tree, and nothing here
-        # dirties it either. Still immutably pinned (raw URL @ the SHA).
+        # Write the zip to RUNNER_TEMP (outside the tool tree). build-plugin.sh
+        # itself only reads the tool repo + stages in its own tmpdir, so the tree
+        # stays clean.
         env:
           TOOL: ${{ steps.tool.outputs.name }}
-          KIT_SHA: ${{ github.job_workflow_sha }}
         run: |
-          script="$RUNNER_TEMP/build-plugin.sh"
-          curl -fsSL "https://raw.githubusercontent.com/aac/plugin-release-kit/$KIT_SHA/bin/build-plugin.sh" -o "$script"
-          bash "$script" \
+          bash _kit/bin/build-plugin.sh \
             --repo . \
             --tool "$TOOL" \
             --ref "$GITHUB_REF_NAME" \
