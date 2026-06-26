@@ -195,6 +195,9 @@ else fail "tracked files contain personal/home paths (use repo-relative or gener
 
 echo "[9] no proper-noun leaks (injected denylist)"
 DL="$DENYLIST_FILE"; [ -n "$DL" ] || DL="${PLUGIN_KIT_DENYLIST:-}"
+# Default to the conventional per-machine location so agents need not be handed
+# a path — the denylist is private and never committed, but lives at a known spot.
+[ -n "$DL" ] || DL="${XDG_CONFIG_HOME:-$HOME/.config}/plugin-release-kit/denylist"
 if [ -n "$DL" ] && [ -f "$DL" ]; then
   terms=$(grep -vE '^\s*(#|$)' "$DL")
   dhits=""

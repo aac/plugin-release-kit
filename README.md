@@ -33,14 +33,16 @@ nouns (maintainer handle, private command/project names) are matched against a
 denylist **injected at runtime** — never committed here:
 
 ```sh
-export PLUGIN_KIT_DENYLIST=<path-to-your-private-denylist>
 bin/verify-release --repo <path-to-tool-repo>
-# or: bin/verify-release --repo <repo> --denylist <file>
+# explicit override: --denylist <file>, or PLUGIN_KIT_DENYLIST=<file>
 ```
 
-The denylist is a newline-separated list of terms (`#` comments allowed). With no
-denylist configured, the proper-noun check is skipped with a warning; everything
-else still runs.
+Resolution order: `--denylist` → `$PLUGIN_KIT_DENYLIST` → the per-machine default
+`~/.config/plugin-release-kit/denylist` (`$XDG_CONFIG_HOME` honored). So on a
+machine that has the default file, agents need not be handed a path — it's found
+automatically. The denylist is a newline-separated list of terms (`#` comments
+allowed) and is **never committed** (it's personal). With none found anywhere, the
+proper-noun check is skipped with a warning; everything else still runs.
 
 ## Wire the release pipeline into a tool
 

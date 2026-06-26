@@ -28,6 +28,7 @@ done
 [ -n "$REPO" ] || REPO=$(pwd)
 [ -e "$REPO/.git" ] || { echo "check-history: not a git repo: $REPO" >&2; exit 2; }
 [ -n "$DL" ] || DL="${PLUGIN_KIT_DENYLIST:-}"
+[ -n "$DL" ] || DL="${XDG_CONFIG_HOME:-$HOME/.config}/plugin-release-kit/denylist"
 
 red=$'\033[31m'; grn=$'\033[32m'; ylw=$'\033[33m'; rst=$'\033[0m'
 [ -t 1 ] || { red=""; grn=""; ylw=""; rst=""; }
