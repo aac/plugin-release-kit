@@ -233,9 +233,14 @@ else
 fi
 CM=.agents/plugins/marketplace.json
 if [ -f "$CM" ] && json_ok "$CM"; then
+  cmok=1
   cver=$(jget "$CM" plugins.0.version)
   [ "$cver" != "__MISS__" ] && warn "$CM: plugins[].version present — Codex keeps version in the plugin manifest, not the marketplace"
-  pass "Codex-native marketplace present ($CM)"
+  inst=$(jget "$CM" plugins.0.policy.installation)
+  case "$inst" in AVAILABLE|INSTALLED_BY_DEFAULT|NOT_AVAILABLE) : ;; *) fail "$CM: policy.installation '$inst' invalid (AVAILABLE|INSTALLED_BY_DEFAULT|NOT_AVAILABLE)"; cmok=0 ;; esac
+  authp=$(jget "$CM" plugins.0.policy.authentication)
+  case "$authp" in ON_INSTALL|ON_FIRST_USE) : ;; *) fail "$CM: policy.authentication '$authp' invalid (ON_INSTALL|ON_FIRST_USE)"; cmok=0 ;; esac
+  [ "$cmok" = 1 ] && pass "Codex-native marketplace present + valid policy ($CM)"
 else
   fail "missing Codex-native marketplace $CM (Codex reads .agents/plugins/marketplace.json)"
 fi

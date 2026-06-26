@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+"""Generate a tool's Codex-native marketplace (.agents/plugins/marketplace.json)
+from its Claude marketplace (.claude-plugin/marketplace.json).
+
+One source (the Claude marketplace) -> both files, so they can't drift. The
+Codex entry differs by schema:
+  * no `version` (Codex keeps the version in the plugin manifest)
+  * `source` is the repo-root Git `url` form (derived from the plugin's
+    `repository`), not Claude's "./"
+  * `policy.installation` / `policy.authentication` (Codex-required)
+  * `category` from the tool's .codex-plugin interface, else "Productivity"
+
+Usage: gen-codex-marketplace [--repo <path>] [--write]
+  Without --write, prints the JSON to stdout (a dry run).
+"""
+import sys, os, json
+
+repo = "."
+write = False
+args = sys.argv[1:]
+while args:
+    a = args.pop(0)
+    if a == "--repo": repo = args.pop(0)
+    elif a == "--write": write = True
+    else: sys.exit(f"gen-codex-marketplace: unknown arg: {a}")
+
+os.chdir(repo)
+claude_path = ".claude-plugin/marketplace.json"
+if not os.path.exists(claude_path):
+    sys.exit(f"gen-codex-marketplace: missing {claude_path}")
+cm = json.load(open(claude_path))
+
+def codex_category():
+    p = ".codex-plugin/plugin.json"
+    if os.path.exists(p):
+        c = json.load(open(p)).get("interface", {}).get("category")
+        if c: return c
+    return "Productivity"
+
+cat = codex_category()
+plugins = []
+for p in cm.get("plugins", []):
+    repository = p.get("repository") or p.get("homepage", "")
+    if not repository:
+        sys.exit(f"gen-codex-marketplace: plugin '{p.get('name')}' has no repository to derive a Codex url source")
+    url = repository if repository.endswith(".git") else repository + ".git"
+    plugins.append({
+        "name": p["name"],
+        "source": {"source": "url", "url": url},
+        "policy": {"installation": "AVAILABLE", "authentication": "ON_FIRST_USE"},
+        "category": cat,
+    })
+
+out = {
+    "name": cm.get("name"),
+    "interface": {"displayName": cm.get("name")},
+    "plugins": plugins,
+}
+text = json.dumps(out, indent=2) + "\n"
+
+if write:
+    os.makedirs(".agents/plugins", exist_ok=True)
+    open(".agents/plugins/marketplace.json", "w").write(text)
+    print("wrote .agents/plugins/marketplace.json")
+else:
+    sys.stdout.write(text)
