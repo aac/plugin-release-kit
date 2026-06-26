@@ -147,3 +147,44 @@ Two steps stay manual:
 
 Order: content pass (verifier green) → clean snapshot → recreate remote → push →
 flip public → announce.
+
+## Shipping a tool — the release runbook
+
+Agent-run end to end. A human is needed only at the gates marked **HUMAN**;
+everything else the agent does itself. Run from the tool repo, with a
+`git pull`-current kit checkout. Verification happens here, at release time —
+there is no continuous CI gate (it would spend Actions minutes for little gain on
+a tool that ships rarely).
+
+1. **Verify.** `PLUGIN_KIT_DENYLIST=<denylist-file> <kit>/bin/verify-release --repo .`
+   Any **FAIL** is a release-readiness violation — the message names the rule;
+   fix it and re-run until `0 FAIL`.
+
+2. **Drift.** If check [7] **WARNs** that the pinned kit SHA is behind HEAD:
+   review what changed — `git -C <kit> log <pinned>..HEAD` — and **bump
+   deliberately** only if a change matters to this tool (edit the SHA in
+   `.github/workflows/release.yml`, commit, re-verify). If it doesn't matter,
+   leave it; the WARN is non-fatal. Never auto-bump without reading the diff —
+   that re-introduces the supply-chain risk the SHA-pin prevents.
+
+3. **Version.** Confirm `metadata.version` in `SKILL.md` is the intended release
+   version (`<kit>/bin/bump-version <v> --repo .` to change it everywhere; add the
+   matching `CHANGELOG.md` entry). `<kit>/bin/check-versions --repo .` must be clean.
+
+4. **Tag.** `git tag vX.Y.Z -m "…" && git push origin vX.Y.Z`. The release
+   workflow builds the binary tarballs + the self-contained plugin zip and
+   attaches them to a **draft** GitHub Release.
+
+5. **Confirm artifacts** on the draft release: 4 tarballs + `checksums.txt` +
+   `<tool>-plugin.zip`, and the zip carries the multi-arch binary + launcher +
+   `skills/` + `.claude-plugin` + `.codex-plugin` + `.mcp.json`.
+
+6. **HUMAN GATE (first public release only):** the privacy repave + flip-to-public
+   (see *What's the maintainer's* above). The agent surfaces these as asks and
+   stops; it does not repave history or change repo visibility itself.
+
+7. **Publish:** flip GoReleaser `draft: true → false` once the first tagged run is
+   validated end to end, then publish.
+
+For a still-private tool, steps 1–5 are the whole loop; the agent escalates step 6
+as an ask and stops there.
