@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Single source of truth for a tool's version-lockstep check (adopted from
+# surface's scripts/check-versions.sh, genericized).
+#
+# SKILL.md's metadata.version is the canonical version. Every version-bearing
+# manifest must match it:
+#   - .claude-plugin/plugin.json
+#   - .codex-plugin/plugin.json
+#   - .claude-plugin/marketplace.json   (Claude marketplace; per-plugin version)
+#
+# The Codex marketplace (.agents/plugins/marketplace.json) is intentionally
+# version-LESS — Codex keeps the version in the plugin manifest — so it is NOT
+# part of this lockstep.
+#
+# Usage: check-versions [--repo <path>]   (default: cwd)
+# Exits non-zero (and prints the mismatches) if any version disagrees.
+set -euo pipefail
+
+REPO="."
+[ "${1:-}" = "--repo" ] && { REPO="$2"; shift 2; }
+cd "$REPO"
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+skill=$(python3 "$HERE/skill-version" --repo .)
+
+jv() { python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d$2)" "$1" 2>/dev/null; }
+
+fail=0
+printf '  %-38s %s\n' "SKILL.md (metadata.version)" "$skill"
+for spec in \
+  ".claude-plugin/plugin.json:['version']" \
+  ".codex-plugin/plugin.json:['version']" \
+  ".claude-plugin/marketplace.json:['plugins'][0]['version']"; do
+  file=${spec%%:*}; path=${spec#*:}
+  [ -f "$file" ] || continue
+  val=$(jv "$file" "$path")
+  printf '  %-38s %s\n' "$file" "$val"
+  if [ "$val" != "$skill" ]; then
+    echo "  MISMATCH: $file ($val) != SKILL.md ($skill)" >&2
+    fail=1
+  fi
+done
+
+if [ "$fail" -eq 0 ]; then
+  echo "  all version strings match: ok"
+else
+  echo "  fix with: $(basename "$0" | sed 's/check-versions/bump-version/') $skill" >&2
+  exit 1
+fi

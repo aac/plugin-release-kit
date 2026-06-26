@@ -1,0 +1,43 @@
+#!/usr/bin/env python3
+"""Print the tool's canonical version: SKILL.md frontmatter `metadata.version`.
+
+Single source of truth for a tool's version (adopted from surface's
+scripts/skill-version.py, genericized). Stdlib-only — no pyyaml — so the version
+lives spec-compliantly under `metadata` while check-versions and CI still have
+one robust way to read it. Exits non-zero if the frontmatter or
+metadata.version is missing.
+
+Usage: skill-version [--repo <path>]   (default: cwd; finds the one skills/*/SKILL.md)
+"""
+import sys, glob, os
+
+repo = "."
+args = sys.argv[1:]
+if args and args[0] == "--repo":
+    repo = args[1]
+
+matches = sorted(glob.glob(os.path.join(repo, "skills", "*", "SKILL.md")))
+if not matches:
+    sys.exit("skill-version: no skills/*/SKILL.md found")
+if len(matches) > 1:
+    sys.exit(f"skill-version: multiple SKILL.md trees: {matches}")
+PATH = matches[0]
+
+lines = open(PATH, encoding="utf-8").read().splitlines()
+if not lines or lines[0].strip() != "---":
+    sys.exit(f"{PATH}: no frontmatter '---' block")
+in_meta = False
+for line in lines[1:]:
+    if line.strip() == "---":
+        break
+    indented = line.startswith((" ", "\t"))
+    if not indented:
+        in_meta = line.split(":", 1)[0].strip() == "metadata"
+        continue
+    if in_meta and line.strip().startswith("version:"):
+        val = line.split(":", 1)[1].strip().strip('"').strip("'")
+        if not val:
+            sys.exit(f"{PATH}: metadata.version is empty")
+        print(val)
+        sys.exit(0)
+sys.exit(f"{PATH}: no metadata.version found in frontmatter")

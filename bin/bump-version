@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Bump a tool's version across all version-bearing manifests in lockstep
+# (adopted from surface's scripts/bump-version.sh, genericized):
+#   - skills/<tool>/SKILL.md            (frontmatter metadata.version)
+#   - .claude-plugin/plugin.json
+#   - .codex-plugin/plugin.json
+#   - .claude-plugin/marketplace.json   (per-plugin version)
+#
+# The Codex marketplace (.agents/plugins/marketplace.json) is version-less and
+# left untouched. CHANGELOG.md is not touched — add the '## [<version>]' section
+# yourself. Run check-versions afterward to confirm.
+#
+# Usage: bump-version <new-version> [--repo <path>]
+set -euo pipefail
+
+new="${1:?usage: bump-version <new-version> [--repo <path>]}"; shift || true
+REPO="."
+[ "${1:-}" = "--repo" ] && { REPO="$2"; shift 2; }
+cd "$REPO"
+cd "$(git rev-parse --show-toplevel)"
+
+# SKILL.md frontmatter: replace metadata.version (the one indented version: key).
+python3 - "$new" <<'PY'
+import re, sys, glob
+new = sys.argv[1]
+m = sorted(glob.glob("skills/*/SKILL.md"))
+assert len(m) == 1, f"expected exactly one skills/*/SKILL.md, found {m}"
+p = m[0]
+s = open(p).read()
+parts = s.split("---\n", 2)
+assert len(parts) == 3, f"{p}: could not isolate frontmatter block"
+fm, n = re.subn(r'(?m)^(\s+)version:.*$', rf'\g<1>version: "{new}"', parts[1], count=1)
+assert n == 1, f"expected exactly one indented 'version:' under metadata in {p}, found {n}"
+open(p, "w").write(parts[0] + "---\n" + fm + "---\n" + parts[2])
+PY
+
+# JSON manifests: replace the first "version": "..." value in place.
+python3 - "$new" <<'PY'
+import re, sys, os
+new = sys.argv[1]
+for p in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json", ".claude-plugin/marketplace.json"):
+    if not os.path.exists(p): continue
+    s = open(p).read()
+    s, n = re.subn(r'("version"\s*:\s*")[^"]*(")', rf'\g<1>{new}\g<2>', s, count=1)
+    assert n == 1, f"expected exactly one '\"version\"' in {p}, found {n}"
+    open(p, "w").write(s)
+PY
+
+echo "Bumped all version-bearing manifests to $new."
+echo "Next: add a '## [$new]' section to CHANGELOG.md, then run check-versions"

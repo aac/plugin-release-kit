@@ -58,12 +58,38 @@ The published zip is fully self-contained even though the *build* is shared.
 
 - Both `.claude-plugin/plugin.json` and `.codex-plugin/plugin.json` are valid
   JSON (an inline annotation left in a manifest makes a host reject it). [check 2]
-- All manifests plus `marketplace.json` agree on `version`. The git tag is the
-  source of truth; manifest versions are hand-kept in step. [check 2]
+- **Versions are kept in lockstep from one source.** `SKILL.md`'s frontmatter
+  `metadata.version` is the canonical version; `.claude-plugin/plugin.json`,
+  `.codex-plugin/plugin.json`, and `.claude-plugin/marketplace.json` must all
+  match it. Use the kit's `bin/bump-version <v>` to change it everywhere and
+  `bin/check-versions` to gate drift — the verifier's [check 2] calls the latter,
+  so there is exactly one version mechanism, not a per-repo copy. The Codex
+  marketplace is version-less (see Marketplaces). [check 2]
 - Claude auto-discovers `skills/` and `.mcp.json`, so `.claude-plugin/plugin.json`
-  is minimal. Codex does not auto-discover, so `.codex-plugin/plugin.json` points
-  explicitly at `"skills": "./skills/"` and `"mcpServers": "./.mcp.json"`.
+  is minimal. Codex does not auto-discover, so `.codex-plugin/plugin.json` must
+  carry explicit component pointers for whatever it bundles — `"skills":
+  "./skills/"`, and `"mcpServers": "./.mcp.json"` when shipping MCP. Pointers
+  start with `./`, stay inside the plugin root, and must resolve. The `interface`
+  block is optional install-surface metadata — recommended for published plugins,
+  not required for a valid manifest. [check 11]
 - The skill description stays within Codex's 1024-char limit. [check 10]
+
+## Marketplaces: Claude and Codex
+
+A tool repo carries one marketplace file per host:
+
+- **`.claude-plugin/marketplace.json`** — Claude's. `"source": "./"`, per-plugin
+  `version` present. [check 1] Codex also reads this as a legacy-compatible
+  fallback.
+- **`.agents/plugins/marketplace.json`** — Codex's *native* location. Same plugin
+  entry, but **version-less** (Codex keeps the version in the plugin manifest);
+  entries carry `source`, `policy.installation`, `policy.authentication`, and
+  `category`. [check 11]
+
+Source formats (both hosts): repo-root Git is
+`{"source":"url","url":"https://github.com/<owner>/<tool>.git"}`; local is
+`{"source":"local","path":"./..."}`; Git subdir is
+`{"source":"git-subdir","url":"...","path":"./..."}`.
 
 ## Content hygiene (the scrub)
 

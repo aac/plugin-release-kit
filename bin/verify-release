@@ -38,6 +38,7 @@ done
 [ -n "$REPO" ] || REPO=$(pwd)
 REPO=$(CDPATH= cd -- "$REPO" && pwd) || { echo "verify-release: bad --repo" >&2; exit 2; }
 [ -e "$REPO/.git" ] || { echo "verify-release: not a git repo: $REPO" >&2; exit 2; }
+KITBIN=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)  # resolve before cd-ing into target
 cd "$REPO"
 
 FAILS=0 WARNS=0
@@ -95,20 +96,19 @@ if [ -f "$MP" ] && json_ok "$MP"; then
 else fail "missing or invalid .claude-plugin/marketplace.json"; fi
 
 echo "[2] manifests valid JSON + version lockstep"
-vers=""; ok=1
-for m in .claude-plugin/plugin.json .codex-plugin/plugin.json "$MP"; do
+jok=1
+for m in .claude-plugin/plugin.json .codex-plugin/plugin.json "$MP" .agents/plugins/marketplace.json; do
   [ -f "$m" ] || continue
-  if json_ok "$m"; then :; else fail "invalid JSON: $m"; ok=0; continue; fi
-  case "$m" in
-    *marketplace.json) v=$(jget "$m" plugins.0.version) ;;
-    *) v=$(jget "$m" version) ;;
-  esac
-  vers="$vers$m=$v"$'\n'
+  json_ok "$m" || { fail "invalid JSON: $m"; jok=0; }
 done
-uniq_v=$(printf '%s' "$vers" | sed -nE 's/.*=//p' | sort -u | grep -v '^__' | grep -v '^$')
-nv=$(printf '%s' "$uniq_v" | grep -c .)
-if [ "$ok" = 1 ] && [ "$nv" -le 1 ]; then pass "all manifests valid; version lockstep ($(printf '%s' "$uniq_v" | tr '\n' ' '))"
-else fail "version mismatch across manifests:"; printf '%s' "$vers" | sed 's/^/         /'; fi
+[ "$jok" = 1 ] && pass "all present manifests are valid JSON"
+# Version lockstep via the canonical check-versions (SKILL.md metadata.version
+# is the single source; all version-bearing manifests must match it).
+if cvout=$("$KITBIN/check-versions" --repo "$REPO" 2>&1); then
+  pass "version lockstep ($(printf '%s\n' "$cvout" | awk 'NR==1{print $NF}'))"
+else
+  fail "version lockstep (check-versions):"; printf '%s\n' "$cvout" | sed 's/^/         /'
+fi
 
 echo "[3] README leads with plugin install"
 if [ -f README.md ]; then
@@ -208,6 +208,38 @@ print(len(dm.group(1).strip()) if dm else -1)" "$SK" 2>/dev/null)
   else fail "skill description ${dlen} chars exceeds Codex 1024 limit ($SK)"; fi
 fi
 fi  # end plugin-shape check [10]
+
+if [ "$IS_PLUGIN_REPO" = 1 ]; then
+echo "[11] Codex packaging (.codex-plugin manifest + native marketplace)"
+if [ -f .codex-plugin/plugin.json ]; then
+  cpok=1
+  # Component pointers must start with ./ and resolve; required when the
+  # component is present in the tree (Codex does not auto-discover).
+  sval=$(jget .codex-plugin/plugin.json skills)
+  case "$sval" in
+    __MISS__) [ -d skills ] && { fail ".codex-plugin/plugin.json: skills/ exists but no 'skills' pointer"; cpok=0; } ;;
+    ./*) [ -e "$sval" ] || { fail ".codex-plugin/plugin.json: skills pointer '$sval' does not resolve"; cpok=0; } ;;
+    *) fail ".codex-plugin/plugin.json: skills '$sval' must start with ./"; cpok=0 ;;
+  esac
+  mval=$(jget .codex-plugin/plugin.json mcpServers)
+  case "$mval" in
+    __MISS__) [ -f .mcp.json ] && { fail ".codex-plugin/plugin.json: .mcp.json exists but no 'mcpServers' pointer"; cpok=0; } ;;
+    ./*) [ -e "$mval" ] || { fail ".codex-plugin/plugin.json: mcpServers pointer '$mval' does not resolve"; cpok=0; } ;;
+    *) fail ".codex-plugin/plugin.json: mcpServers '$mval' must start with ./"; cpok=0 ;;
+  esac
+  [ "$cpok" = 1 ] && pass ".codex-plugin/plugin.json present; component pointers valid"
+else
+  fail ".codex-plugin/plugin.json missing — required for Codex packaging"
+fi
+CM=.agents/plugins/marketplace.json
+if [ -f "$CM" ] && json_ok "$CM"; then
+  cver=$(jget "$CM" plugins.0.version)
+  [ "$cver" != "__MISS__" ] && warn "$CM: plugins[].version present — Codex keeps version in the plugin manifest, not the marketplace"
+  pass "Codex-native marketplace present ($CM)"
+else
+  fail "missing Codex-native marketplace $CM (Codex reads .agents/plugins/marketplace.json)"
+fi
+fi
 
 echo
 total=$((FAILS+WARNS))
