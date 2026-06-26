@@ -90,6 +90,21 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Verify signed darwin/arm64 binary executes
+        # Binary tools only: the macOS runner is Apple Silicon, so run the
+        # freshly ad-hoc-signed darwin/arm64 build. An unsigned arm64 binary is
+        # SIGKILL'd (rc >= 128) — fail the release instead of shipping a dead
+        # binary. No-op for skill-only tools (no dist binary).
+        if: hashFiles('.goreleaser.yml', '.goreleaser.yaml') != ''
+        env:
+          TOOL: ${{ steps.tool.outputs.name }}
+        run: |
+          bin=$(find dist -type f -name "$TOOL" -path '*darwin*arm64*' 2>/dev/null | head -1)
+          [ -n "$bin" ] || { echo "no darwin/arm64 binary in dist — skipping"; exit 0; }
+          "$bin" version >/dev/null 2>&1; rc=$?
+          if [ "$rc" -ge 128 ]; then echo "FAIL: $bin killed by signal $((rc-128)) — ad-hoc signing did not take"; exit 1; fi
+          echo "OK: $bin executes (rc=$rc) — ad-hoc signature valid"
+
       - name: Build self-contained plugin zip
         env:
           TOOL: ${{ steps.tool.outputs.name }}
