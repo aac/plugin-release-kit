@@ -39,6 +39,7 @@ done
 REPO=$(CDPATH= cd -- "$REPO" && pwd) || { echo "verify-release: bad --repo" >&2; exit 2; }
 [ -e "$REPO/.git" ] || { echo "verify-release: not a git repo: $REPO" >&2; exit 2; }
 KITBIN=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)  # resolve before cd-ing into target
+KITROOT=$(dirname "$KITBIN")
 cd "$REPO"
 
 FAILS=0 WARNS=0
@@ -153,7 +154,21 @@ if [ "$IS_BINARY" = 1 ]; then
     if [ -n "$badpin" ]; then
       fail "reusable release workflow not pinned to a commit SHA (mutable ref '$badpin' = CI/CD supply-chain risk)"
     else
-      pass "release workflow wires + SHA-pins the plugin-zip build ($(echo "$wf" | tr '\n' ' '))"
+      # Drift signal: compare the tool's pinned kit SHA to the local kit HEAD.
+      pinned=$(grep -hoE "plugin-release-kit/[^@\"' ]*@[0-9a-f]{40}" $wf 2>/dev/null | sed -E 's/.*@//' | head -1)
+      kithead=$(git -C "$KITROOT" rev-parse HEAD 2>/dev/null)
+      if [ -z "$pinned" ] || [ -z "$kithead" ]; then
+        pass "release workflow wires + SHA-pins the plugin-zip build"
+      elif [ "$pinned" = "$kithead" ]; then
+        pass "release workflow SHA-pinned to current kit HEAD (${pinned:0:7})"
+      elif git -C "$KITROOT" cat-file -e "$pinned" 2>/dev/null && git -C "$KITROOT" merge-base --is-ancestor "$pinned" "$kithead" 2>/dev/null; then
+        behind=$(git -C "$KITROOT" rev-list --count "$pinned".."$kithead" 2>/dev/null)
+        warn "release workflow pins kit ${pinned:0:7} — $behind commit(s) behind kit HEAD ${kithead:0:7}; bump the pin deliberately to adopt kit updates"
+      elif git -C "$KITROOT" cat-file -e "$pinned" 2>/dev/null; then
+        pass "release workflow SHA-pinned (${pinned:0:7}; ahead of or diverged from local kit HEAD)"
+      else
+        warn "release workflow pins kit ${pinned:0:7} not in local kit history — git pull the kit to assess drift"
+      fi
     fi
   else fail "no release workflow step builds/attaches the plugin zip — '/plugin install' would have no binary (wire the plugin-release-kit reusable workflow)"; fi
   if [ -f .mcp.json ]; then

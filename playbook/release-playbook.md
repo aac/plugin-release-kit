@@ -50,6 +50,12 @@ release bundles one. The mechanism:
   repo's `release.yml` is a thin caller that `uses:` it — **pinned to an
   immutable commit SHA**, never a moving branch/tag, since the reusable workflow
   runs with `contents: write` (CI/CD supply-chain hygiene). [check 7]
+  - Because the pin is immutable it does **not** auto-update. `verify-release`
+    [check 7] **warns** when a tool's pinned kit SHA is behind the kit's `HEAD`,
+    so drift surfaces every time you verify a tool — no separate sweep to
+    remember. Adopt kit updates by bumping the pin **deliberately**. (The signal
+    compares against your *local* kit checkout's `HEAD`, so keep it
+    `git pull`-current for the count to be accurate.)
 - The binary is **never committed**; `bin/` is gitignored. [check 7]
 - `.mcp.json`'s command name equals the binary name, so the plugin-placed binary
   resolves on `$PATH`. [check 7]
