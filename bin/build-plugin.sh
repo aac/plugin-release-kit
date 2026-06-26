@@ -50,8 +50,13 @@ mkdir -p "$ROOT"
 # 1. Skill + manifest payload — tracked files only at $REF.
 # Archive skills/<tool> (not all of skills/) so the go:embed source at
 # skills/skill.go and any other non-skill files stay out of the plugin.
+# Include both host manifests (.claude-plugin, .codex-plugin) and the MCP
+# config (.mcp.json) so the installed plugin actually delivers the MCP server on
+# both Claude and Codex. The Codex marketplace (.agents/) is repo-level discovery,
+# not plugin payload, so it stays out. Absent paths (e.g. skill-only tools with
+# no .mcp.json) are skipped.
 paths=""
-for p in .claude-plugin "skills/$TOOL"; do
+for p in .claude-plugin .codex-plugin .mcp.json "skills/$TOOL"; do
   if git -C "$REPO" ls-tree "$REF" -- "$p" | grep -q .; then paths="$paths $p"; fi
 done
 [ -n "$paths" ] || { echo "build-plugin: no .claude-plugin/ or skills/$TOOL tracked at $REF" >&2; exit 1; }
