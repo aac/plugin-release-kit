@@ -254,6 +254,20 @@ else
 fi
 fi
 
+if [ "$IS_PLUGIN_REPO" = 1 ]; then
+echo "[12] vendor-neutral build doc (CLAUDE.md -> AGENTS.md)"
+if [ -f CLAUDE.md ]; then
+  clines=$(grep -cvE '^[[:space:]]*$' CLAUDE.md)
+  if grep -qiE 'AGENTS\.md' CLAUDE.md || [ "$clines" -le 12 ]; then
+    pass "CLAUDE.md is a thin pointer$([ -f AGENTS.md ] && echo ' (AGENTS.md present)')"
+  else
+    fail "CLAUDE.md is a substantive build doc ($clines lines) — ship build guidance as AGENTS.md (vendor-neutral); leave CLAUDE.md a thin pointer to it"
+  fi
+else
+  pass "no vendor-named CLAUDE.md (build guidance in AGENTS.md/README)"
+fi
+fi
+
 echo
 total=$((FAILS+WARNS))
 if [ "$FAILS" -gt 0 ]; then
