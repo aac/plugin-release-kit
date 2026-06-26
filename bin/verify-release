@@ -1,0 +1,226 @@
+#!/usr/bin/env bash
+# verify-release — check a tool repo against the canonical plugin-release
+# playbook (see ../playbook/release-playbook.md).
+#
+# This is the executable form of the playbook: every assertion below is a
+# release-readiness rule that, if violated, is a stale/inconsistent path that
+# would otherwise be rediscovered by hand. Run it locally during release prep
+# and as a CI gate.
+#
+#   verify-release [--repo <path>] [--denylist <file>] [--strict]
+#
+#   --repo      target repo (default: cwd)
+#   --denylist  newline-separated proper-noun denylist file (names, handles,
+#               private command/project names). Overrides $PLUGIN_KIT_DENYLIST.
+#   --strict    treat WARN as failure too (exit 1 on any WARN)
+#
+# PRIVACY MODEL — this script is public; it must contain zero personal data.
+#   * Personal *paths* are caught by generic patterns (/Users/<x>, /home/<x>)
+#     that never name a person.
+#   * Personal *proper nouns* (maintainer name, GitHub handle, private slash
+#     commands, project codenames) are NOT hardcoded — they are injected at
+#     runtime from --denylist or $PLUGIN_KIT_DENYLIST, which live outside this
+#     repo. A public reader sees "scans against a configured denylist", never
+#     its contents.
+#   * The repo owner/org is *derived* from the target's git remote, not baked in.
+set -uo pipefail
+
+REPO="" DENYLIST_FILE="" STRICT=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo) REPO=$2; shift 2 ;;
+    --denylist) DENYLIST_FILE=$2; shift 2 ;;
+    --strict) STRICT=1; shift ;;
+    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
+    *) echo "verify-release: unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+[ -n "$REPO" ] || REPO=$(pwd)
+REPO=$(CDPATH= cd -- "$REPO" && pwd) || { echo "verify-release: bad --repo" >&2; exit 2; }
+[ -e "$REPO/.git" ] || { echo "verify-release: not a git repo: $REPO" >&2; exit 2; }
+cd "$REPO"
+
+FAILS=0 WARNS=0
+red=$'\033[31m'; grn=$'\033[32m'; ylw=$'\033[33m'; dim=$'\033[2m'; rst=$'\033[0m'
+[ -t 1 ] || { red=""; grn=""; ylw=""; dim=""; rst=""; }
+pass() { printf '  %sPASS%s %s\n' "$grn" "$rst" "$1"; }
+fail() { printf '  %sFAIL%s %s\n' "$red" "$rst" "$1"; FAILS=$((FAILS+1)); }
+warn() { printf '  %sWARN%s %s\n' "$ylw" "$rst" "$1"; WARNS=$((WARNS+1)); }
+info() { printf '       %s%s%s\n' "$dim" "$1" "$rst"; }
+
+# JSON helper (python3 — no jq dependency).
+jget() { python3 -c "import json,sys
+try:
+    d=json.load(open(sys.argv[1]))
+except Exception as e:
+    print('__ERR__:'+str(e)); sys.exit(0)
+cur=d
+for k in sys.argv[2].split('.'):
+    if k=='': continue
+    if isinstance(cur,list):
+        try: cur=cur[int(k)]
+        except: print('__MISS__'); sys.exit(0)
+    elif isinstance(cur,dict) and k in cur: cur=cur[k]
+    else: print('__MISS__'); sys.exit(0)
+print(cur if not isinstance(cur,(dict,list)) else json.dumps(cur))" "$1" "$2" 2>/dev/null; }
+json_ok() { python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$1" 2>/dev/null; }
+
+# Derive tool name and owner (owner from git remote — public identity, not personal).
+TOOL=$(jget .claude-plugin/marketplace.json plugins.0.name)
+case "$TOOL" in __*|"") TOOL=$(basename "$REPO") ;; esac
+ORIGIN=$(git remote get-url origin 2>/dev/null || true)
+OWNER=$(printf '%s' "$ORIGIN" | sed -nE 's#.*[/:]([^/]+)/[^/]+(\.git)?$#\1#p')
+[ -n "$OWNER" ] || OWNER="<owner>"
+IS_BINARY=0; [ -d "cmd/$TOOL" ] && IS_BINARY=1
+# A tool-plugin repo has a skill tree, a command, or plugin manifests. Other repos
+# (e.g. tooling) get only the hygiene/privacy checks, not the plugin-shape ones.
+IS_PLUGIN_REPO=0
+{ [ -d skills ] || [ -d cmd ] || [ -f .claude-plugin/marketplace.json ] || [ -f .claude-plugin/plugin.json ]; } && IS_PLUGIN_REPO=1
+
+printf '%s== verify-release: %s ==%s  tool=%s owner=%s %s\n' \
+  "$rst" "$REPO" "$rst" "$TOOL" "$OWNER" "$([ "$IS_BINARY" = 1 ] && echo '(binary)' || echo '(skill-only)')"
+
+# Tracked-file list once (most checks scan the shipped surface, not gitignored cruft).
+TRACKED=$(git ls-files)
+
+[ "$IS_PLUGIN_REPO" = 0 ] && info "not a tool-plugin repo — running hygiene/privacy checks only"
+
+if [ "$IS_PLUGIN_REPO" = 1 ]; then
+echo "[1] per-repo self-marketplace"
+MP=.claude-plugin/marketplace.json
+if [ -f "$MP" ] && json_ok "$MP"; then
+  src=$(jget "$MP" plugins.0.source)
+  if [ "$src" = "./" ]; then pass "marketplace.json present, source \"./\" (surface model)"
+  else fail "marketplace.json source is \"$src\", expected \"./\" (per-repo self-marketplace)"; fi
+else fail "missing or invalid .claude-plugin/marketplace.json"; fi
+
+echo "[2] manifests valid JSON + version lockstep"
+vers=""; ok=1
+for m in .claude-plugin/plugin.json .codex-plugin/plugin.json "$MP"; do
+  [ -f "$m" ] || continue
+  if json_ok "$m"; then :; else fail "invalid JSON: $m"; ok=0; continue; fi
+  case "$m" in
+    *marketplace.json) v=$(jget "$m" plugins.0.version) ;;
+    *) v=$(jget "$m" version) ;;
+  esac
+  vers="$vers$m=$v"$'\n'
+done
+uniq_v=$(printf '%s' "$vers" | sed -nE 's/.*=//p' | sort -u | grep -v '^__' | grep -v '^$')
+nv=$(printf '%s' "$uniq_v" | grep -c .)
+if [ "$ok" = 1 ] && [ "$nv" -le 1 ]; then pass "all manifests valid; version lockstep ($(printf '%s' "$uniq_v" | tr '\n' ' '))"
+else fail "version mismatch across manifests:"; printf '%s' "$vers" | sed 's/^/         /'; fi
+
+echo "[3] README leads with plugin install"
+if [ -f README.md ]; then
+  if grep -qiE "plugin marketplace add +$OWNER/$TOOL" README.md && grep -qiE "plugin install +$TOOL@$TOOL" README.md; then
+    pln=$(grep -niE "plugin marketplace add +$OWNER/$TOOL" README.md | head -1 | cut -d: -f1)
+    cln=$(grep -niE "curl .*install\.sh|go install " README.md | head -1 | cut -d: -f1)
+    pass "README documents 'plugin marketplace add $OWNER/$TOOL' + 'install $TOOL@$TOOL'"
+    if [ -n "$cln" ] && [ -n "$pln" ] && [ "$cln" -lt "$pln" ]; then
+      warn "a binary-install line (curl/go install) appears before the plugin line — plugin should lead"
+    fi
+  else fail "README does not document the per-repo plugin install ('plugin marketplace add $OWNER/$TOOL' + 'install $TOOL@$TOOL')"; fi
+else fail "no README.md"; fi
+
+echo "[4] retired distribution paths absent"
+hits=$(printf '%s\n' "$TRACKED" | while read -r f; do [ -f "$f" ] && grep -Il "agent-tools-release" "$f"; done)
+if [ -z "$hits" ]; then pass "no 'agent-tools-release' references in tracked files"
+else fail "tracked files still reference the retired 'agent-tools-release' distribution path:"; printf '%s' "$hits" | sed 's/^/         /'; fi
+fi  # end plugin-shape checks [1]-[4]
+
+echo "[5] pre-release drafts folded/removed"
+drafts=$(find . -path ./.git -prune -o -type f \( -name '*.revised.md' -o -name '*.annotated.md' \) -print 2>/dev/null | sed 's|^\./||')
+if [ -z "$drafts" ]; then pass "no .revised.md/.annotated.md drafts left in tree"
+else fail "scope-review drafts still present (fold into canonical + delete before shipping):"; printf '%s\n' "$drafts" | sed 's/^/         /'; fi
+
+echo "[6] single canonical skill tree"
+skilltrees=$(find . -path ./.git -prune -o -type f -name 'SKILL.md' -print 2>/dev/null | sed 's|^\./||')
+n=$(printf '%s\n' "$skilltrees" | grep -c .)
+if [ "$n" -le 1 ]; then pass "one SKILL.md (${skilltrees:-none})"
+else fail "multiple SKILL.md trees — duplicate skill source drifts:"; printf '%s\n' "$skilltrees" | sed 's/^/         /'; fi
+
+if [ "$IS_PLUGIN_REPO" = 1 ]; then
+echo "[7] binary delivery into the plugin (binary tools)"
+if [ "$IS_BINARY" = 1 ]; then
+  if git check-ignore -q bin 2>/dev/null || ! printf '%s\n' "$TRACKED" | grep -q "^bin/"; then
+    pass "bin/ not committed (binary built by release, never in source)"
+  else fail "compiled artifacts appear tracked under bin/ — binary must be build-produced, gitignored"; fi
+  wf=$(grep -rliE "build-plugin|plugin-release-kit|release-plugin\.yml" .github/workflows 2>/dev/null)
+  if [ -n "$wf" ]; then pass "release workflow wires the plugin-zip build ($(echo "$wf" | tr '\n' ' '))"
+  else fail "no release workflow step builds/attaches the plugin zip — '/plugin install' would have no binary (wire the plugin-release-kit reusable workflow)"; fi
+  if [ -f .mcp.json ]; then
+    cmd=$(python3 -c "import json;d=json.load(open('.mcp.json'));s=d.get('mcpServers',{});print(next(iter(s.values()),{}).get('command','') if s else '')" 2>/dev/null)
+    if [ "$cmd" = "$TOOL" ]; then pass ".mcp.json command \"$cmd\" == binary name"
+    else fail ".mcp.json command \"$cmd\" != binary name \"$TOOL\""; fi
+  fi
+else info "skill-only tool — no binary-into-plugin requirement"; fi
+fi  # end plugin-shape check [7]
+
+echo "[8] no personal paths in shipped (tracked) files"
+# Only UNAMBIGUOUS absolute home paths — never legitimate in a shipped repo.
+# Personal tilde-dir conventions (a personal workspace root, etc.) are per-user
+# judgment and live in the injected denylist, not in this public pattern (which
+# also keeps legit standard paths like ~/.claude / ~/.codex from false-positiving).
+ppat='/Users/[A-Za-z0-9._-]+|/home/[A-Za-z0-9._-]+'
+phits=$(printf '%s\n' "$TRACKED" | while read -r f; do
+  [ -f "$f" ] || continue
+  [[ "$f" == LICENSE* ]] && continue
+  grep -IlnE "$ppat" "$f" 2>/dev/null
+done)
+if [ -z "$phits" ]; then pass "no absolute personal/home paths in tracked files"
+else fail "tracked files contain personal/home paths (use repo-relative or generic placeholders):"; printf '%s\n' "$phits" | sed 's/^/         /'; fi
+
+echo "[9] no proper-noun leaks (injected denylist)"
+DL="$DENYLIST_FILE"; [ -n "$DL" ] || DL="${PLUGIN_KIT_DENYLIST:-}"
+if [ -n "$DL" ] && [ -f "$DL" ]; then
+  terms=$(grep -vE '^\s*(#|$)' "$DL")
+  dhits=""
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    h=$(printf '%s\n' "$TRACKED" | while read -r f; do
+      [ -f "$f" ] || continue
+      # Skip files where personal names are legitimate (author attribution).
+      [[ "$f" == LICENSE* ]] && continue
+      [[ "$f" == *.claude-plugin/*.json || "$f" == *.codex-plugin/*.json ]] && continue
+      grep -Il -- "$t" "$f" 2>/dev/null && break
+    done)
+    [ -n "$h" ] && dhits="$dhits$t -> $(printf '%s' "$h" | tr '\n' ' ')"$'\n'
+  done <<< "$terms"
+  if [ -z "$dhits" ]; then pass "no denylisted proper nouns in tracked files"
+  else fail "tracked files leak denylisted terms:"; printf '%s' "$dhits" | sed 's/^/         /'; fi
+else
+  warn "no denylist configured (--denylist or \$PLUGIN_KIT_DENYLIST) — proper-noun scan skipped"
+fi
+
+if [ "$IS_PLUGIN_REPO" = 1 ]; then
+echo "[10] skill description within Codex 1024-char limit"
+SK=$(printf '%s\n' "$skilltrees" | head -1)
+if [ -n "$SK" ] && [ -f "$SK" ]; then
+  dlen=$(python3 -c "
+import sys,re
+t=open(sys.argv[1]).read()
+m=re.search(r'^---\n(.*?)\n---', t, re.S)
+fm=m.group(1) if m else ''
+dm=re.search(r'^description:\s*(.*)$', fm, re.M)
+print(len(dm.group(1).strip()) if dm else -1)" "$SK" 2>/dev/null)
+  if [ "$dlen" = "-1" ]; then warn "could not parse skill description in $SK"
+  elif [ "$dlen" -le 1024 ]; then pass "skill description ${dlen}/1024 chars"
+  else fail "skill description ${dlen} chars exceeds Codex 1024 limit ($SK)"; fi
+fi
+fi  # end plugin-shape check [10]
+
+echo
+total=$((FAILS+WARNS))
+if [ "$FAILS" -gt 0 ]; then
+  printf '%s%d FAIL%s, %d WARN — not release-ready\n' "$red" "$FAILS" "$rst" "$WARNS"
+  exit 1
+elif [ "$WARNS" -gt 0 ] && [ "$STRICT" = 1 ]; then
+  printf '%s%d WARN%s (strict) — not release-ready\n' "$ylw" "$WARNS" "$rst"
+  exit 1
+elif [ "$WARNS" -gt 0 ]; then
+  printf '%s0 FAIL, %d WARN%s — release-ready (review warnings)\n' "$grn" "$WARNS" "$rst"
+  exit 0
+else
+  printf '%sall checks pass — release-ready%s\n' "$grn" "$rst"
+  exit 0
+fi

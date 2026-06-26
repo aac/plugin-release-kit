@@ -1,0 +1,9 @@
+# Local agent/editor state — never ship personal harness config in a public repo.
+.claude/
+*.lock
+.DS_Store
+
+# Build artifacts
+dist/
+/tmp/
+*.zip

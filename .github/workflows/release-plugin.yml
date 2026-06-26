@@ -1,0 +1,108 @@
+# Reusable release workflow for agent-tool plugins.
+#
+# This is the ONE canonical release mechanism. Each tool repo's own
+# .github/workflows/release.yml is a thin caller:
+#
+#   name: Release
+#   on:
+#     push:
+#       tags: ['v*']
+#   jobs:
+#     release:
+#       uses: aac/plugin-release-kit/.github/workflows/release-plugin.yml@v1
+#       with:
+#         tool: ask            # optional; defaults to the repo name
+#       permissions:
+#         contents: write
+#
+# What it produces on a vX.Y.Z tag:
+#   * GoReleaser cross-compiles + ad-hoc-signs the binary tarballs (the
+#     go-install / curl|sh path) using the caller repo's own .goreleaser.yml.
+#   * build-plugin.sh assembles the self-contained <tool>-plugin.zip (skill +
+#     manifests, and for binary tools the multi-arch binary + launcher) and
+#     attaches it to the draft GitHub Release. This is what `/plugin install
+#     <tool>@<tool>` consumes.
+#
+# Binary-into-plugin specifics converge with the act repo's release work; the
+# seam (every tool `uses:` this file) is the durable part.
+
+on:
+  workflow_call:
+    inputs:
+      tool:
+        description: "Tool/binary name (defaults to the caller repo name)"
+        type: string
+        required: false
+        default: ""
+      go-version:
+        type: string
+        required: false
+        default: "1.25"
+      kit-ref:
+        description: "Ref of plugin-release-kit to use for build-plugin.sh"
+        type: string
+        required: false
+        default: "v1"
+
+jobs:
+  release:
+    # macOS so the GoReleaser post-hook can ad-hoc codesign darwin binaries
+    # (unsigned arm64 is SIGKILL'd). Free; no Apple Developer account.
+    runs-on: macos-latest
+    steps:
+      - name: Checkout tool repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout plugin-release-kit
+        uses: actions/checkout@v4
+        with:
+          repository: aac/plugin-release-kit
+          ref: ${{ inputs.kit-ref }}
+          path: _kit
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ inputs.go-version }}
+
+      - name: Resolve tool name
+        id: tool
+        env:
+          TOOL_INPUT: ${{ inputs.tool }}
+        run: |
+          t="$TOOL_INPUT"
+          [ -n "$t" ] || t="${GITHUB_REPOSITORY##*/}"
+          # Validate before it reaches a shell command or a filename.
+          case "$t" in
+            *[!a-zA-Z0-9._-]*) echo "invalid tool name: $t" >&2; exit 1 ;;
+          esac
+          echo "name=$t" >> "$GITHUB_OUTPUT"
+
+      - name: GoReleaser (binary tarballs + checksums)
+        if: hashFiles('.goreleaser.yml', '.goreleaser.yaml') != ''
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build self-contained plugin zip
+        env:
+          TOOL: ${{ steps.tool.outputs.name }}
+        run: |
+          bash _kit/bin/build-plugin.sh \
+            --repo . \
+            --tool "$TOOL" \
+            --ref "$GITHUB_REF_NAME" \
+            --out "$TOOL-plugin.zip"
+
+      - name: Attach plugin zip to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TOOL: ${{ steps.tool.outputs.name }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" "$TOOL-plugin.zip" --clobber
