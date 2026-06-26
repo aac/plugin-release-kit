@@ -74,10 +74,13 @@ ORIGIN=$(git remote get-url origin 2>/dev/null || true)
 OWNER=$(printf '%s' "$ORIGIN" | sed -nE 's#.*[/:]([^/]+)/[^/]+(\.git)?$#\1#p')
 [ -n "$OWNER" ] || OWNER="<owner>"
 IS_BINARY=0; [ -d "cmd/$TOOL" ] && IS_BINARY=1
-# A tool-plugin repo has a skill tree, a command, or plugin manifests. Other repos
-# (e.g. tooling) get only the hygiene/privacy checks, not the plugin-shape ones.
+# A tool-plugin repo is defined by its plugin manifests (.claude-plugin /
+# .codex-plugin) or a compiled command (cmd/). A bare skills/ dir does NOT make a
+# repo a plugin — a tooling repo (like this kit) can carry a maintainer skill
+# without being treated as a distributable plugin. Other repos get only the
+# hygiene/privacy checks, not the plugin-shape ones.
 IS_PLUGIN_REPO=0
-{ [ -d skills ] || [ -d cmd ] || [ -f .claude-plugin/marketplace.json ] || [ -f .claude-plugin/plugin.json ]; } && IS_PLUGIN_REPO=1
+{ [ -d .claude-plugin ] || [ -d .codex-plugin ] || [ -d cmd ]; } && IS_PLUGIN_REPO=1
 
 printf '%s== verify-release: %s ==%s  tool=%s owner=%s %s\n' \
   "$rst" "$REPO" "$rst" "$TOOL" "$OWNER" "$([ "$IS_BINARY" = 1 ] && echo '(binary)' || echo '(skill-only)')"
