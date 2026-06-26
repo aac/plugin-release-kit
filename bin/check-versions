@@ -19,7 +19,10 @@ set -euo pipefail
 REPO="."
 [ "${1:-}" = "--repo" ] && { REPO="$2"; shift 2; }
 cd "$REPO"
-HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+# Resolve $0 through symlinks so skill-version (sibling) is found when invoked
+# via a symlink on PATH.
+self="$0"; while [ -L "$self" ]; do t=$(readlink "$self"); case "$t" in /*) self="$t" ;; *) self="$(dirname "$self")/$t" ;; esac; done
+HERE=$(CDPATH= cd -- "$(dirname -- "$self")" && pwd)
 
 skill=$(python3 "$HERE/skill-version" --repo .)
 

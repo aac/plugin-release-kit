@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# install — wire the kit into a developer's environment, the way the agent-tools
+# self-install: put the kit's commands on PATH and link the ship-plugin skill.
+#
+# Symlinks the user-facing scripts into a PATH directory (default ~/.local/bin)
+# so they run as bare commands (`verify-release --repo .`), and links the
+# ship-plugin skill into ~/.claude/skills/. Idempotent. Re-run after pulling.
+#
+#   bin/install [--bindir <dir>] [--skip-skill]
+set -euo pipefail
+
+# Kit root = parent of this script's (resolved) directory.
+self="$0"; while [ -L "$self" ]; do t=$(readlink "$self"); case "$t" in /*) self="$t" ;; *) self="$(dirname "$self")/$t" ;; esac; done
+KITBIN=$(CDPATH= cd -- "$(dirname -- "$self")" && pwd)
+KITROOT=$(dirname "$KITBIN")
+
+BINDIR="$HOME/.local/bin"
+SKILL=1
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --bindir) BINDIR=$2; shift 2 ;;
+    --skip-skill) SKILL=0; shift ;;
+    -h|--help) sed -n '2,11p' "$0"; exit 0 ;;
+    *) echo "install: unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+mkdir -p "$BINDIR"
+# User-facing commands. Internal helpers (skill-version, build-plugin.sh) stay in
+# bin/ and are found by the commands via symlink-resolved sibling lookup.
+for cmd in verify-release check-versions bump-version check-history gen-codex-marketplace; do
+  ln -sfn "$KITBIN/$cmd" "$BINDIR/$cmd"
+  echo "  linked $cmd -> $BINDIR/$cmd"
+done
+
+if [ "$SKILL" = 1 ]; then
+  skilldir="$HOME/.claude/skills"
+  mkdir -p "$skilldir"
+  ln -sfn "$KITROOT/skills/ship-plugin" "$skilldir/ship-plugin"
+  echo "  linked ship-plugin skill -> $skilldir/ship-plugin"
+fi
+
+echo
+case ":$PATH:" in
+  *":$BINDIR:"*) echo "Done. $BINDIR is on PATH — commands are ready." ;;
+  *) echo "Done. NOTE: $BINDIR is not on your PATH; add it, e.g.:"
+     echo "  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.zshrc" ;;
+esac

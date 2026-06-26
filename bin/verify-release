@@ -38,7 +38,10 @@ done
 [ -n "$REPO" ] || REPO=$(pwd)
 REPO=$(CDPATH= cd -- "$REPO" && pwd) || { echo "verify-release: bad --repo" >&2; exit 2; }
 [ -e "$REPO/.git" ] || { echo "verify-release: not a git repo: $REPO" >&2; exit 2; }
-KITBIN=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)  # resolve before cd-ing into target
+# Resolve $0 through symlinks so sibling scripts (check-versions) are found even
+# when this is invoked via a symlink on PATH (e.g. ~/.local/bin).
+self="$0"; while [ -L "$self" ]; do t=$(readlink "$self"); case "$t" in /*) self="$t" ;; *) self="$(dirname "$self")/$t" ;; esac; done
+KITBIN=$(CDPATH= cd -- "$(dirname -- "$self")" && pwd)  # resolve before cd-ing into target
 KITROOT=$(dirname "$KITBIN")
 cd "$REPO"
 
