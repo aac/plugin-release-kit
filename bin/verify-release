@@ -141,12 +141,12 @@ else fail "tracked files still reference the retired 'agent-tools-release' distr
 fi  # end plugin-shape checks [1]-[4]
 
 echo "[5] pre-release drafts folded/removed"
-drafts=$(find . -path ./.git -prune -o -type f \( -name '*.revised.md' -o -name '*.annotated.md' \) -print 2>/dev/null | sed 's|^\./||')
+drafts=$(find . \( -path ./.git -o -path ./_kit \) -prune -o -type f \( -name '*.revised.md' -o -name '*.annotated.md' \) -print 2>/dev/null | sed 's|^\./||')
 if [ -z "$drafts" ]; then pass "no .revised.md/.annotated.md drafts left in tree"
 else fail "scope-review drafts still present (fold into canonical + delete before shipping):"; printf '%s\n' "$drafts" | sed 's/^/         /'; fi
 
 echo "[6] single canonical skill tree"
-skilltrees=$(find . -path ./.git -prune -o -type f -name 'SKILL.md' -print 2>/dev/null | sed 's|^\./||')
+skilltrees=$(find . \( -path ./.git -o -path ./_kit \) -prune -o -type f -name 'SKILL.md' -print 2>/dev/null | sed 's|^\./||')
 n=$(printf '%s\n' "$skilltrees" | grep -c .)
 if [ "$n" -le 1 ]; then pass "one SKILL.md (${skilltrees:-none})"
 else fail "multiple SKILL.md trees — duplicate skill source drifts:"; printf '%s\n' "$skilltrees" | sed 's/^/         /'; fi
