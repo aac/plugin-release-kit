@@ -105,6 +105,10 @@ if [ -f "$MP" ] && json_ok "$MP"; then
   src=$(jget "$MP" plugins.0.source)
   if [ "$src" = "./" ]; then pass "marketplace.json present, source \"./\" (surface model)"
   else fail "marketplace.json source is \"$src\", expected \"./\" (per-repo self-marketplace)"; fi
+  # Older Claude Code (e.g. 2.1.91) rejects a top-level "$schema" key in
+  # marketplace.json under `plugin validate` (Unrecognized key). Current
+  # releases accept it, so this is a forward/back-compat warn, not a fail.
+  [ "$(jget "$MP" '$schema')" != "__MISS__" ] && warn "marketplace.json carries a top-level \"\$schema\" key — some Claude Code versions' \`plugin validate\` reject it (Unrecognized key); drop it unless a host you target needs it"
 else fail "missing or invalid .claude-plugin/marketplace.json"; fi
 
 echo "[2] manifests valid JSON + version lockstep"
@@ -354,6 +358,26 @@ if [ -f CLAUDE.md ]; then
 else
   pass "no vendor-named CLAUDE.md (build guidance in AGENTS.md/README)"
 fi
+fi
+
+if [ "$IS_PLUGIN_REPO" = 1 ] && [ -f .claude-plugin/plugin.json ]; then
+echo "[13] Claude manifest minimal (no component pointers — Claude auto-discovers)"
+# Claude Code auto-discovers skills/ and .mcp.json, and its plugin.json schema
+# REJECTS a "skills" key outright — `plugin install` fails with "skills: Invalid
+# input" on affected releases (seen on 2.1.91). The skills/mcpServers pointers
+# belong ONLY in .codex-plugin/plugin.json (check 11), which does not
+# auto-discover. This is the Claude-side mirror of check 11: 11 asserts the
+# Codex manifest HAS the pointer; this asserts the Claude manifest LACKS it.
+cmok=1
+case "$(jget .claude-plugin/plugin.json skills)" in
+  __MISS__|__ERR__:*) ;;
+  *) fail ".claude-plugin/plugin.json carries a 'skills' key — Claude Code rejects it (\`plugin install\` fails 'skills: Invalid input'). Drop it; Claude auto-discovers skills/. The pointer belongs only in .codex-plugin/plugin.json (check 11)."; cmok=0 ;;
+esac
+case "$(jget .claude-plugin/plugin.json mcpServers)" in
+  __MISS__|__ERR__:*) ;;
+  *) fail ".claude-plugin/plugin.json carries an 'mcpServers' key — Claude auto-discovers .mcp.json. Drop it; the pointer belongs only in .codex-plugin/plugin.json (check 11)."; cmok=0 ;;
+esac
+[ "$cmok" = 1 ] && pass ".claude-plugin/plugin.json carries no skills/mcpServers pointers (Claude auto-discovers)"
 fi
 
 echo
