@@ -6,15 +6,18 @@
 # runnable locally to produce a zip for upload/testing.
 #
 # Design notes:
-#   * Skill + manifest payload comes from `git archive` (TRACKED files only),
-#     so gitignored scope-review drafts (*.revised.md, *.annotated.md) and
-#     cruft (.DS_Store) are excluded by construction — no manual scrub, and
-#     once revisions land over canonical the archive just picks them up.
-#   * Binary tools (those with cmd/<tool>) get multi-arch binaries
-#     cross-compiled into bin/, plus a bin/<tool> launcher that selects the
-#     right one at runtime via uname. The launcher derives the tool name from
-#     its own filename, so it is identical across tools.
-#   * Skill-only tools (surface, reach — no cmd/<tool>) ship no binary.
+#   * The whole payload — skill, manifests, AND (for binary tools) the committed
+#     bin/ launcher + per-arch binaries — comes from `git archive` (TRACKED files
+#     only). git archive preserves the executable bit and copies the committed
+#     binaries byte-for-byte, so the launcher stays executable and the ad-hoc
+#     darwin signatures survive into the zip. Gitignored scope-review drafts
+#     (*.revised.md) and cruft (.DS_Store) are excluded by construction.
+#   * Binaries are NOT cross-compiled here. They are produced ahead of the tag by
+#     `stage-binaries` and committed under bin/ (lib-binaries.sh holds the one
+#     definition of the arch list + launcher). Because the zip and `/plugin
+#     install` both read the same committed tree at the tag, they stay in lockstep
+#     automatically — no separate build that could drift from what was installed.
+#   * Skill-only tools (surface, reach — no cmd/<tool>, no bin/) ship no binary.
 #
 # Usage:
 #   build-plugin.sh --repo <path> [--tool <name>] [--ref <git-ref>] [--out <zip>]
@@ -23,7 +26,6 @@
 set -euo pipefail
 
 REPO="" TOOL="" REF="HEAD" OUT=""
-ARCHES="darwin/amd64 darwin/arm64 linux/amd64 linux/arm64"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -47,16 +49,19 @@ trap 'rm -rf "$STAGE"' EXIT
 ROOT="$STAGE/$TOOL"
 mkdir -p "$ROOT"
 
-# 1. Skill + manifest payload — tracked files only at $REF.
+# 1. Payload — tracked files only at $REF.
 # Archive skills/<tool> (not all of skills/) so the go:embed source at
 # skills/skill.go and any other non-skill files stay out of the plugin.
 # Include both host manifests (.claude-plugin, .codex-plugin) and the MCP
 # config (.mcp.json) so the installed plugin actually delivers the MCP server on
-# both Claude and Codex. The Codex marketplace (.agents/) is repo-level discovery,
-# not plugin payload, so it stays out. Absent paths (e.g. skill-only tools with
-# no .mcp.json) are skipped.
+# both Claude and Codex. For binary tools, `bin` carries the committed launcher +
+# per-arch binaries (the same tree `/plugin install` checks out), so the zip is a
+# faithful copy of the installed plugin rather than a separately-built artifact.
+# The Codex marketplace (.agents/) is repo-level discovery, not plugin payload, so
+# it stays out. Absent paths (skill-only tools have no bin/ or .mcp.json) are
+# skipped.
 paths=""
-for p in .claude-plugin .codex-plugin .mcp.json "skills/$TOOL"; do
+for p in .claude-plugin .codex-plugin .mcp.json bin "skills/$TOOL"; do
   if git -C "$REPO" ls-tree "$REF" -- "$p" | grep -q .; then paths="$paths $p"; fi
 done
 [ -n "$paths" ] || { echo "build-plugin: no .claude-plugin/ or skills/$TOOL tracked at $REF" >&2; exit 1; }
@@ -66,29 +71,15 @@ git -C "$REPO" archive --format=tar "$REF" $paths | tar -x -C "$ROOT"
 # 2. License at the plugin root.
 [ -f "$REPO/LICENSE" ] && cp "$REPO/LICENSE" "$ROOT/LICENSE.txt"
 
-# 3. Binary tools: cross-compile every arch + the launcher. Skill-only tools skip.
+# 3. Payload summary. Binaries (if any) came from the committed bin/ above; a
+# binary tool that reaches here with no bin/ in the archive was never staged
+# (verify-release's check [7] is the gate that catches that before a tag).
 if [ -d "$REPO/cmd/$TOOL" ]; then
-  mkdir -p "$ROOT/bin"
-  for a in $ARCHES; do
-    os=${a%/*}; arch=${a#*/}
-    ( cd "$REPO" && GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 \
-        go build -trimpath -o "$ROOT/bin/$TOOL-$os-$arch" "./cmd/$TOOL" )
-  done
-  # Tool-agnostic launcher: name derived from its own filename.
-  cat > "$ROOT/bin/$TOOL" <<'WRAP'
-#!/bin/sh
-# Selects the bundled platform binary (sibling <name>-<os>-<arch>).
-name=$(basename "$0")
-dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-os=$(uname -s | tr '[:upper:]' '[:lower:]')
-arch=$(uname -m)
-case "$arch" in x86_64|amd64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; esac
-bin="$dir/$name-$os-$arch"
-[ -x "$bin" ] || { echo "$name: no bundled binary for $os/$arch at $bin" >&2; exit 127; }
-exec "$bin" "$@"
-WRAP
-  chmod +x "$ROOT/bin/$TOOL" "$ROOT/bin/$TOOL"-*
-  payload="multi-arch binary + bin/$TOOL launcher ($ARCHES)"
+  if [ -d "$ROOT/bin" ]; then
+    payload="committed bin/ (launcher + per-arch binaries) from $REF"
+  else
+    payload="WARNING: binary tool but no committed bin/ at $REF — run stage-binaries"
+  fi
 else
   payload="skill-only (no cmd/$TOOL)"
 fi

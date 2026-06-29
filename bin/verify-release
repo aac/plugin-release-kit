@@ -43,6 +43,11 @@ REPO=$(CDPATH= cd -- "$REPO" && pwd) || { echo "verify-release: bad --repo" >&2;
 self="$0"; while [ -L "$self" ]; do t=$(readlink "$self"); case "$t" in /*) self="$t" ;; *) self="$(dirname "$self")/$t" ;; esac; done
 KITBIN=$(CDPATH= cd -- "$(dirname -- "$self")" && pwd)  # resolve before cd-ing into target
 KITROOT=$(dirname "$KITBIN")
+# Shared definition of the target arch list (and launcher) — check [7] verifies
+# the committed bin/ matches it, so it must read from the same source stage-binaries
+# builds from, not a hardcoded copy.
+# shellcheck source=lib-binaries.sh
+. "$KITBIN/lib-binaries.sh"
 cd "$REPO"
 
 FAILS=0 WARNS=0
@@ -149,9 +154,31 @@ else fail "multiple SKILL.md trees — duplicate skill source drifts:"; printf '
 if [ "$IS_PLUGIN_REPO" = 1 ]; then
 echo "[7] binary delivery into the plugin (binary tools)"
 if [ "$IS_BINARY" = 1 ]; then
-  if git check-ignore -q bin 2>/dev/null || ! printf '%s\n' "$TRACKED" | grep -q "^bin/"; then
-    pass "bin/ not committed (binary built by release, never in source)"
-  else fail "compiled artifacts appear tracked under bin/ — binary must be build-produced, gitignored"; fi
+  # A "source":"./" marketplace installs only TRACKED files and /plugin install
+  # never fetches GitHub Release assets — so the binary the MCP server launches
+  # must be committed under bin/: the uname launcher plus one binary per arch.
+  miss=""
+  printf '%s\n' "$TRACKED" | grep -qx "bin/$TOOL" || miss="$miss bin/$TOOL(launcher)"
+  for a in $KIT_ARCHES; do
+    b="bin/$TOOL-${a%/*}-${a#*/}"
+    printf '%s\n' "$TRACKED" | grep -qx "$b" || miss="$miss $b"
+  done
+  if [ -z "$miss" ]; then pass "committed bin/: launcher + per-arch binaries present ($KIT_ARCHES)"
+  else fail "binary tool missing committed bin/ artifacts — run stage-binaries (un-gitignore bin/ first):$miss"; fi
+  # Execute smoke test: the committed binary for THIS host must actually run.
+  # Catches a corrupt/truncated/wrong-arch commit, a broken launcher, and — on
+  # macOS — an unsigned darwin/arm64 binary the kernel SIGKILLs (the exact way a
+  # plugin would install yet fail to start for a Mac user). Uses the `version`
+  # subcommand the release flow already relies on; only a signal-kill is fatal.
+  hostos=$(uname -s | tr '[:upper:]' '[:lower:]')
+  hostarch=$(uname -m); case "$hostarch" in x86_64|amd64) hostarch=amd64 ;; aarch64|arm64) hostarch=arm64 ;; esac
+  if [ -z "$miss" ] && [ -f "bin/$TOOL-$hostos-$hostarch" ]; then
+    smoke=$("bin/$TOOL" version 2>&1); rc=$?
+    if [ "$rc" -ge 128 ]; then fail "committed bin/$TOOL killed by signal $((rc-128)) on $hostos/$hostarch — corrupt or unsigned (darwin needs ad-hoc codesign; re-run stage-binaries on macOS)"
+    else pass "committed bin/$TOOL executes on $hostos/$hostarch (rc=$rc)"; fi
+  elif [ -z "$miss" ]; then
+    info "no committed binary for this host ($hostos/$hostarch) — execute smoke test skipped"
+  fi
   wf=$(grep -rliE "build-plugin|plugin-release-kit|release-plugin\.yml" .github/workflows 2>/dev/null)
   if [ -n "$wf" ]; then
     # The reusable workflow runs with contents:write — require an immutable SHA
@@ -176,11 +203,25 @@ if [ "$IS_BINARY" = 1 ]; then
         warn "release workflow pins kit ${pinned:0:7} not in local kit history — git pull the kit to assess drift"
       fi
     fi
-  else fail "no release workflow step builds/attaches the plugin zip — '/plugin install' would have no binary (wire the plugin-release-kit reusable workflow)"; fi
+  else fail "no release workflow wires the plugin-release-kit reusable workflow — binary-install tarballs + plugin zip won't be built (the committed bin/ delivers the install, the workflow delivers the fallbacks)"; fi
+  # MCP startup does NOT get the plugin's bin/ on PATH (that's Bash-tool-only), so
+  # the command must reference the bundled launcher by absolute path. Claude
+  # expands ${CLAUDE_PLUGIN_ROOT} to the plugin root — the documented mechanism.
   if [ -f .mcp.json ]; then
     cmd=$(python3 -c "import json;d=json.load(open('.mcp.json'));s=d.get('mcpServers',{});print(next(iter(s.values()),{}).get('command','') if s else '')" 2>/dev/null)
-    if [ "$cmd" = "$TOOL" ]; then pass ".mcp.json command \"$cmd\" == binary name"
-    else fail ".mcp.json command \"$cmd\" != binary name \"$TOOL\""; fi
+    want="\${CLAUDE_PLUGIN_ROOT}/bin/$TOOL"
+    if [ "$cmd" = "$want" ]; then pass ".mcp.json command \"$cmd\" targets the bundled launcher"
+    else fail ".mcp.json command \"$cmd\" != \"$want\" — MCP startup has no plugin bin/ on PATH; use \${CLAUDE_PLUGIN_ROOT}"; fi
+    # Codex reads this same .mcp.json but does NOT expand ${CLAUDE_PLUGIN_ROOT}
+    # (it resolves a bundled binary via a relative command + cwd joined to the
+    # plugin root). A single command string can't serve both hosts, so a tool
+    # that ships MCP on Codex needs a Codex-specific server definition.
+    case "$cmd" in
+      *'${CLAUDE_PLUGIN_ROOT}'*)
+        if [ -f .codex-plugin/plugin.json ]; then
+          warn ".mcp.json uses \${CLAUDE_PLUGIN_ROOT}; Codex won't expand it — Codex needs a relative command + cwd:\".\" to resolve bin/$TOOL (ship a host-specific MCP config for Codex)"
+        fi ;;
+    esac
   fi
 else info "skill-only tool — no binary-into-plugin requirement"; fi
 fi  # end plugin-shape check [7]

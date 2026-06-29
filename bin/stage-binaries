@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# stage-binaries — cross-compile a binary tool's per-arch binaries + launcher
+# into its TRACKED bin/, ready for the maintainer to commit before tagging.
+#
+# Why this exists: a `"source": "./"` marketplace installs only tracked files,
+# and `/plugin install` never fetches GitHub Release assets — so the binary a
+# plugin's MCP server runs must be committed in the repo, not just built into a
+# release zip. This stages exactly what gets committed:
+#
+#   bin/<tool>               uname launcher shim (the .mcp.json command target)
+#   bin/<tool>-darwin-amd64  ad-hoc-codesigned
+#   bin/<tool>-darwin-arm64  ad-hoc-codesigned
+#   bin/<tool>-linux-amd64
+#   bin/<tool>-linux-arm64
+#
+# Darwin binaries are ad-hoc signed here (matching the release codesign step);
+# this MUST run on macOS, since an unsigned darwin/arm64 binary is SIGKILL'd at
+# launch and `codesign` is macOS-only.
+#
+# Usage:
+#   stage-binaries [--repo <path>] [--tool <name>]
+#   (--repo defaults to cwd; --tool to the repo basename.)
+#
+# After it runs, review and commit the staged bin/ — then bump the version, add
+# the CHANGELOG entry, and tag. The committed bin/ at the tag is what ships.
+set -euo pipefail
+
+REPO="" TOOL=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo) REPO=$2; shift 2 ;;
+    --tool) TOOL=$2; shift 2 ;;
+    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+    *) echo "stage-binaries: unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+[ -n "$REPO" ] || REPO=$(pwd)
+REPO=$(CDPATH= cd -- "$REPO" && pwd)
+[ -e "$REPO/.git" ] || { echo "stage-binaries: not a git repo: $REPO" >&2; exit 1; }
+[ -n "$TOOL" ] || TOOL=$(basename "$REPO")
+
+# Resolve $0 through symlinks so the sibling lib is found even when invoked via a
+# symlink on PATH.
+self="$0"; while [ -L "$self" ]; do t=$(readlink "$self"); case "$t" in /*) self="$t" ;; *) self="$(dirname "$self")/$t" ;; esac; done
+KITBIN=$(CDPATH= cd -- "$(dirname -- "$self")" && pwd)
+# shellcheck source=lib-binaries.sh
+. "$KITBIN/lib-binaries.sh"
+
+[ -d "$REPO/cmd/$TOOL" ] || { echo "stage-binaries: $REPO has no cmd/$TOOL — skill-only tools ship no binary" >&2; exit 1; }
+
+echo "stage-binaries: building $TOOL into $REPO/bin ($KIT_ARCHES)"
+kit_build_arches "$REPO" "$TOOL" "$REPO/bin"
+
+echo "stage-binaries: staged — review and commit before tagging:"
+( cd "$REPO" && ls -l "bin/$TOOL" bin/"$TOOL"-* | sed 's/^/  /' )
+echo "  next: git add bin/ && git commit, then bump-version + tag."

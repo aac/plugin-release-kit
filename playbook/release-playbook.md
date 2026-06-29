@@ -38,29 +38,57 @@ documented *fallback*, never the lead.
 
 ## Binary-into-plugin delivery
 
-A `"source": "./"` marketplace installs **tracked files only**, and the binary is
-gitignored — so a binary tool's plugin would have no working binary unless the
-release bundles one. The mechanism:
+A `"source": "./"` marketplace installs **tracked files only**, and `/plugin
+install` **never fetches GitHub Release assets** — it checks out the repo at a
+ref. So the binary a plugin's MCP server runs must be **committed in the repo**;
+a binary built only into a release zip is unreachable to the installer, and a
+fresh user gets a non-functional MCP server. The mechanism:
 
-- `bin/build-plugin.sh` assembles a self-contained `<tool>-plugin.zip`: skill +
-  manifests from `git archive` (tracked files only), and for binary tools the
-  multi-arch binaries cross-compiled into `bin/` plus a `uname`-based launcher.
-- `.github/workflows/release-plugin.yml` (this repo's reusable workflow) runs that
-  step on every `vX.Y.Z` tag and attaches the zip to the GitHub Release. Each tool
-  repo's `release.yml` is a thin caller that `uses:` it — **pinned to an
-  immutable commit SHA**, never a moving branch/tag, since the reusable workflow
-  runs with `contents: write` (CI/CD supply-chain hygiene). [check 7]
+- **Committed `bin/`.** A binary tool commits, under tracked `bin/`, a
+  `uname`-based launcher (`bin/<tool>`) plus one binary per arch
+  (`bin/<tool>-<os>-<arch>` for `darwin/amd64 darwin/arm64 linux/amd64
+  linux/arm64`). `bin/stage-binaries --repo . --tool <tool>` cross-compiles all
+  arches, **ad-hoc-codesigns the darwin binaries** (an unsigned `darwin/arm64`
+  binary is SIGKILL'd at launch — so staging must run on macOS), and writes the
+  launcher; the maintainer commits the result **before tagging**. The arch list
+  and launcher have a single definition in `bin/lib-binaries.sh`. [check 7]
+- **`.mcp.json` targets the launcher by absolute path.** MCP-server startup does
+  **not** get the plugin's `bin/` on `PATH` (that mechanism is Bash-tool-only),
+  so a bare command name does not resolve. The command must be
+  `${CLAUDE_PLUGIN_ROOT}/bin/<tool>` — the documented way for a plugin to invoke
+  its own bundled binary; Claude expands `${CLAUDE_PLUGIN_ROOT}` to the plugin
+  root. [check 7]
+  - **Codex caveat:** Codex reads the same `.mcp.json` but does **not** expand
+    `${CLAUDE_PLUGIN_ROOT}` (it resolves a bundled binary via a relative
+    `command` + `cwd: "."` joined to the plugin root). One command string cannot
+    serve both hosts; a tool shipping MCP on Codex needs a Codex-specific server
+    definition. `verify-release` **warns** when a `${CLAUDE_PLUGIN_ROOT}` config
+    coexists with a `.codex-plugin` manifest. (Per-host MCP config is not yet
+    built by the kit — tracked as follow-up.)
+- **The release workflow delivers the fallbacks, not the install.** `bin/build-
+  plugin.sh` still assembles `<tool>-plugin.zip` — but now purely from `git
+  archive` of the committed tree (including `bin/`, whose executable bits and
+  ad-hoc signatures `git archive` preserves), so the zip is a faithful copy of
+  the installed plugin rather than a separately-built artifact. The zip and the
+  GoReleaser tarballs (the `go install` / `curl | sh` path) are convenience/
+  fallback downloads; the *install* path is the committed tree. The reusable
+  `.github/workflows/release-plugin.yml` runs on every `vX.Y.Z` tag; each tool's
+  `release.yml` is a thin caller that `uses:` it — **pinned to an immutable
+  commit SHA**, never a moving branch/tag, since it runs with `contents: write`
+  (CI/CD supply-chain hygiene). [check 7]
   - Because the pin is immutable it does **not** auto-update. `verify-release`
     [check 7] **warns** when a tool's pinned kit SHA is behind the kit's `HEAD`,
-    so drift surfaces every time you verify a tool — no separate sweep to
-    remember. Adopt kit updates by bumping the pin **deliberately**. (The signal
-    compares against your *local* kit checkout's `HEAD`, so keep it
-    `git pull`-current for the count to be accurate.)
-- The binary is **never committed**; `bin/` is gitignored. [check 7]
-- `.mcp.json`'s command name equals the binary name, so the plugin-placed binary
-  resolves on `$PATH`. [check 7]
+    so drift surfaces every time you verify a tool. Adopt kit updates by bumping
+    the pin **deliberately**. (The signal compares against your *local* kit
+    checkout's `HEAD`, so keep it `git pull`-current for the count to be accurate.)
+- `verify-release` [check 7] runs the committed binary for the verifier's own
+  host (`<tool> version`) as a smoke test — catching a corrupt/wrong-arch commit,
+  a broken launcher, or (on macOS) an unsigned binary that would SIGKILL.
 
-The published zip is fully self-contained even though the *build* is shared.
+**Size tradeoff:** the per-arch binaries are committed raw/uncompressed (~tens of
+MB across four arches), and each release re-commits them, so they accrue in git
+history. UPX/LFS optimization is a **deliberate deferred follow-up**, not done
+here — correctness (a working install) first.
 
 ## Manifests and versions
 
@@ -171,29 +199,38 @@ a tool that ships rarely).
    version (`<kit>/bin/bump-version <v> --repo .` to change it everywhere; add the
    matching `CHANGELOG.md` entry). `<kit>/bin/check-versions --repo .` must be clean.
 
-4. **Tag.** `git tag vX.Y.Z -m "…" && git push origin vX.Y.Z`. The release
-   workflow builds the binary tarballs + the self-contained plugin zip and
-   attaches them to a **draft** GitHub Release.
+4. **Stage binaries (binary tools only).** `<kit>/bin/stage-binaries --repo .`
+   cross-compiles every arch into tracked `bin/`, ad-hoc-signs the darwin
+   binaries, and writes the launcher. **Run on macOS** (darwin signing). Commit
+   the staged `bin/` **before** tagging — the committed tree *at the tag* is what
+   ships, so a tag taken before this captures stale/absent binaries. Re-run
+   `verify-release` after committing so the execute smoke test runs against the
+   freshly-staged binary. Skill-only tools skip this step.
 
-5. **Confirm artifacts** on the draft release: 4 tarballs + `checksums.txt` +
-   `<tool>-plugin.zip`, and the zip carries the multi-arch binary + launcher +
-   `skills/` + `.claude-plugin` + `.codex-plugin` + `.mcp.json`.
+5. **Tag.** `git tag vX.Y.Z -m "…" && git push origin vX.Y.Z`. The release
+   workflow builds the binary tarballs + the plugin zip (now a `git archive` of
+   the committed tree, binaries included) and attaches them to a **draft** GitHub
+   Release.
 
-6. **History check (before a first public release):**
+6. **Confirm artifacts** on the draft release: 4 tarballs + `checksums.txt` +
+   `<tool>-plugin.zip`, and the zip carries `bin/` (launcher + per-arch
+   binaries) + `skills/` + `.claude-plugin` + `.codex-plugin` + `.mcp.json`.
+
+7. **History check (before a first public release):**
    `<kit>/bin/check-history --repo .`. Clean (the normal case for a tool built
-   verifier-green from commit one) → no repave; go to 7. Leaks (a legacy repo
+   verifier-green from commit one) → no repave; go to 8. Leaks (a legacy repo
    developed before the scrub discipline) → a **one-time privacy repave** is
    needed (squash from a clean snapshot; see *What's the maintainer's*) — surface
    it as an ask. The working-tree checks ([8]/[9]) stop new leaks at the source,
    so this is remediation for the past, not a standing step.
 
-7. **HUMAN GATE — flip to public:** going public is a deliberate "ready for the
+8. **HUMAN GATE — flip to public:** going public is a deliberate "ready for the
    world" call. The agent surfaces it as an ask; it does not change repo
    visibility itself (nor rewrite history when a repave is needed — both are
    destructive on a published repo).
 
-8. **Publish:** flip GoReleaser `draft: true → false` once the first tagged run is
+9. **Publish:** flip GoReleaser `draft: true → false` once the first tagged run is
    validated end to end, then publish.
 
-For a still-private tool, steps 1–6 are the whole loop; the agent escalates the
-human gate (7) as an ask and stops there.
+For a still-private tool, steps 1–7 are the whole loop; the agent escalates the
+human gate (8) as an ask and stops there.

@@ -4,15 +4,22 @@ The canonical mechanism + playbook for releasing agent-tools as installable
 plugins. Tool repos reference this kit instead of each keeping their own copy of
 the release process — one source of truth, so the rules can't drift.
 
-It holds exactly three things:
+It holds:
 
 - **`bin/verify-release`** — an executable conformance check. Every release rule
   in the playbook is an assertion here, so drift becomes a failing check instead
   of a hand-rediscovered stale path.
-- **`bin/build-plugin.sh`** — assembles a self-contained `<tool>-plugin.zip`
-  (skill + manifests, and for binary tools the multi-arch binary + launcher).
+- **`bin/stage-binaries`** — cross-compiles a binary tool's per-arch binaries +
+  launcher into its tracked `bin/` (ad-hoc-signing darwin), for the maintainer to
+  commit before tagging. `/plugin install` only delivers tracked files, so the
+  binary must be committed, not just built into a release zip.
+- **`bin/build-plugin.sh`** — assembles a self-contained `<tool>-plugin.zip` from
+  `git archive` of the committed tree (skill + manifests + the committed `bin/`).
 - **`.github/workflows/release-plugin.yml`** — a reusable (`workflow_call`)
   release pipeline. Each tool's `release.yml` is a thin caller.
+
+(Plus `bin/lib-binaries.sh` — the single definition of the arch list + launcher
+shared by `stage-binaries` and `verify-release` — and version helpers.)
 
 The rules these enforce live in **[`playbook/release-playbook.md`](playbook/release-playbook.md)** — the single canonical spec.
 
