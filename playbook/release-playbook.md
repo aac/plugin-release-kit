@@ -52,19 +52,25 @@ fresh user gets a non-functional MCP server. The mechanism:
   binary is SIGKILL'd at launch — so staging must run on macOS), and writes the
   launcher; the maintainer commits the result **before tagging**. The arch list
   and launcher have a single definition in `bin/lib-binaries.sh`. [check 7]
-- **`.mcp.json` targets the launcher by absolute path.** MCP-server startup does
-  **not** get the plugin's `bin/` on `PATH` (that mechanism is Bash-tool-only),
-  so a bare command name does not resolve. The command must be
-  `${CLAUDE_PLUGIN_ROOT}/bin/<tool>` — the documented way for a plugin to invoke
-  its own bundled binary; Claude expands `${CLAUDE_PLUGIN_ROOT}` to the plugin
-  root. [check 7]
-  - **Codex caveat:** Codex reads the same `.mcp.json` but does **not** expand
-    `${CLAUDE_PLUGIN_ROOT}` (it resolves a bundled binary via a relative
-    `command` + `cwd: "."` joined to the plugin root). One command string cannot
-    serve both hosts; a tool shipping MCP on Codex needs a Codex-specific server
-    definition. `verify-release` **warns** when a `${CLAUDE_PLUGIN_ROOT}` config
-    coexists with a `.codex-plugin` manifest. (Per-host MCP config is not yet
-    built by the kit — tracked as follow-up.)
+- **Per-host MCP config — the two hosts can't share one command string.** MCP-
+  server startup does **not** get the plugin's `bin/` on `PATH` (that mechanism is
+  Bash-tool-only), so a bare command name never resolves. Each host references the
+  bundled launcher differently, so a binary tool ships **two** server definitions:
+  - **Claude** auto-discovers root `.mcp.json`; its command is
+    `${CLAUDE_PLUGIN_ROOT}/bin/<tool>` — the documented way for a plugin to invoke
+    its own binary; Claude expands `${CLAUDE_PLUGIN_ROOT}` to the plugin root.
+  - **Codex** does **not** auto-discover and does **not** expand
+    `${CLAUDE_PLUGIN_ROOT}`. It loads the file `.codex-plugin/plugin.json`'s
+    `mcpServers` points at, and resolves a bundled binary via a **relative
+    `command` + `cwd` joined to the plugin root**. So Codex gets its own config —
+    `.codex-plugin/mcp.json` with `command: "./bin/<tool>"`, `cwd: "."` — and
+    `.codex-plugin/plugin.json` points `mcpServers` at `./.codex-plugin/mcp.json`
+    (not the Claude `.mcp.json`). Empirically validated on codex 0.141.0: the
+    bundled binary launches from the plugin cache root with no PATH dependency.
+  - `verify-release` [check 7] asserts both: root `.mcp.json` uses
+    `${CLAUDE_PLUGIN_ROOT}/bin/<tool>`, and the Codex-pointed config uses
+    `./bin/<tool>` + `cwd: "."` (and **fails** if Codex's pointer aims back at the
+    Claude `.mcp.json`). [check 7]
 - **The release workflow delivers the fallbacks, not the install.** `bin/build-
   plugin.sh` still assembles `<tool>-plugin.zip` — but now purely from `git
   archive` of the committed tree (including `bin/`, whose executable bits and

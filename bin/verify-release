@@ -212,16 +212,29 @@ if [ "$IS_BINARY" = 1 ]; then
     want="\${CLAUDE_PLUGIN_ROOT}/bin/$TOOL"
     if [ "$cmd" = "$want" ]; then pass ".mcp.json command \"$cmd\" targets the bundled launcher"
     else fail ".mcp.json command \"$cmd\" != \"$want\" — MCP startup has no plugin bin/ on PATH; use \${CLAUDE_PLUGIN_ROOT}"; fi
-    # Codex reads this same .mcp.json but does NOT expand ${CLAUDE_PLUGIN_ROOT}
-    # (it resolves a bundled binary via a relative command + cwd joined to the
-    # plugin root). A single command string can't serve both hosts, so a tool
-    # that ships MCP on Codex needs a Codex-specific server definition.
-    case "$cmd" in
-      *'${CLAUDE_PLUGIN_ROOT}'*)
-        if [ -f .codex-plugin/plugin.json ]; then
-          warn ".mcp.json uses \${CLAUDE_PLUGIN_ROOT}; Codex won't expand it — Codex needs a relative command + cwd:\".\" to resolve bin/$TOOL (ship a host-specific MCP config for Codex)"
-        fi ;;
-    esac
+  fi
+  # Codex reads the file .codex-plugin/plugin.json's mcpServers points to (it does
+  # NOT auto-discover .mcp.json) and does NOT expand ${CLAUDE_PLUGIN_ROOT} — it
+  # resolves a bundled binary via a relative command + a cwd joined to the plugin
+  # root. Empirically (codex 0.141.0): command "./bin/<tool>", cwd ".". So a binary
+  # tool shipping MCP on Codex needs a Codex-specific server def, separate from the
+  # Claude .mcp.json above — one command string can't serve both hosts.
+  if [ -f .codex-plugin/plugin.json ]; then
+    cxptr=$(jget .codex-plugin/plugin.json mcpServers)
+    cxfile=${cxptr#./}
+    if [ "$cxptr" = "__MISS__" ]; then
+      [ -f .mcp.json ] && warn "Codex .codex-plugin/plugin.json has no mcpServers pointer — Codex won't deliver bin/$TOOL's MCP server"
+    elif [ "$cxptr" = "./.mcp.json" ]; then
+      fail "Codex mcpServers points at the Claude .mcp.json (\${CLAUDE_PLUGIN_ROOT}, which Codex won't expand) — point it at a Codex-specific config: command \"./bin/$TOOL\", cwd \".\""
+    elif [ -f "$cxfile" ]; then
+      ccmd=$(python3 -c "import json;s=json.load(open('$cxfile')).get('mcpServers',{});print((next(iter(s.values()),{}) if s else {}).get('command',''))" 2>/dev/null)
+      ccwd=$(python3 -c "import json;s=json.load(open('$cxfile')).get('mcpServers',{});print((next(iter(s.values()),{}) if s else {}).get('cwd',''))" 2>/dev/null)
+      if [ "$ccmd" = "./bin/$TOOL" ] && [ "$ccwd" = "." ]; then
+        pass "Codex MCP config $cxfile resolves bin/$TOOL (command \"$ccmd\", cwd \"$ccwd\")"
+      else
+        fail "Codex MCP config $cxfile: command \"$ccmd\" cwd \"$ccwd\" — Codex needs command \"./bin/$TOOL\" + cwd \".\" (it joins cwd to the plugin root; it does not expand \${CLAUDE_PLUGIN_ROOT})"
+      fi
+    fi
   fi
 else info "skill-only tool — no binary-into-plugin requirement"; fi
 fi  # end plugin-shape check [7]
