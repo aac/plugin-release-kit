@@ -1,31 +1,40 @@
-# Reusable release workflow for agent-tool plugins.
+# Reusable PREPARE-RELEASE workflow for agent-tool plugins.
 #
-# This is the ONE canonical release mechanism. Each tool repo's own
-# .github/workflows/release.yml is a thin caller:
+# Release model: COMMIT-TO-MAIN. Both Claude (`/plugin install`) and Codex
+# install a plugin from the repo's DEFAULT BRANCH; neither consults git tags, and
+# updates are driven by the `version` field in the manifests (a bumped version is
+# what makes a client pull new content). So a "release" is simply: build the
+# per-arch binaries in CI, stamp + sign them, bump the version, and COMMIT it all
+# to the default branch. There are NO tags, NO GitHub Releases, NO tarballs, and
+# nothing is built on anyone's laptop.
+#
+# Each tool's .github/workflows/release.yml is a thin caller, triggered ON DEMAND
+# when you're ready to cut a release:
 #
 #   name: Release
 #   on:
-#     push:
-#       tags: ['v*']
+#     workflow_dispatch:
+#       inputs:
+#         version: { description: "x.y.z", required: true }
 #   jobs:
 #     release:
-#       # Pin to an immutable commit SHA (this workflow runs with contents:write).
+#       # Pin to an immutable commit SHA — this workflow COMMITS to your default
+#       # branch, so it runs with contents:write. Bump the pin deliberately.
 #       uses: aac/plugin-release-kit/.github/workflows/release-plugin.yml@<commit-sha>
 #       with:
-#         tool: ask            # optional; defaults to the repo name
+#         tool: ask                       # optional; defaults to the repo name
+#         version: ${{ inputs.version }}
 #       permissions:
 #         contents: write
 #
-# What it produces on a vX.Y.Z tag:
-#   * GoReleaser cross-compiles + ad-hoc-signs the binary tarballs (the
-#     go-install / curl|sh path) using the caller repo's own .goreleaser.yml.
-#   * build-plugin.sh assembles the self-contained <tool>-plugin.zip (skill +
-#     manifests, and for binary tools the multi-arch binary + launcher) and
-#     attaches it to the draft GitHub Release. This is what `/plugin install
-#     <tool>@<tool>` consumes.
-#
-# Binary-into-plugin specifics converge with the act repo's release work; the
-# seam (every tool `uses:` this file) is the durable part.
+# What it does on dispatch:
+#   1. bump-version  — write <version> into SKILL.md + the manifests.
+#   2. stage-binaries — cross-compile all arches, STAMP the version
+#      (-ldflags -X <module>/internal/version.Binary=<version>), ad-hoc-sign
+#      darwin, write the launcher, into the tracked bin/.
+#   3. verify-release — conformance gate (0 FAIL required), incl. the version
+#      smoke test that fails a dev/stale stamp.
+#   4. commit + push the result to the default branch. That IS the release.
 
 on:
   workflow_call:
@@ -35,6 +44,10 @@ on:
         type: string
         required: false
         default: ""
+      version:
+        description: "Release version, x.y.z (written into the manifests + stamped into the binaries)"
+        type: string
+        required: true
       go-version:
         type: string
         required: false
@@ -42,20 +55,20 @@ on:
 
 jobs:
   release:
-    # macOS so the GoReleaser post-hook can ad-hoc codesign darwin binaries
-    # (unsigned arm64 is SIGKILL'd). Free; no Apple Developer account.
+    # macOS so stage-binaries can ad-hoc codesign darwin (unsigned arm64 is
+    # SIGKILL'd). Free; no Apple Developer account.
     runs-on: macos-latest
+    permissions:
+      contents: write
     steps:
-      - name: Checkout tool repo
+      - name: Checkout tool repo (default branch)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Checkout plugin-release-kit
-        # Pin to the exact commit of THIS reusable workflow (job_workflow_sha),
-        # so build-plugin.sh comes from the same immutable commit the caller
-        # pinned. Lands in _kit/ inside the workspace; the next step hides it
-        # from the tool's git status so GoReleaser sees a clean tree.
+        # Pin to the exact commit of THIS reusable workflow (job_workflow_sha) so
+        # the kit scripts come from the same immutable commit the caller pinned.
         uses: actions/checkout@v4
         with:
           repository: aac/plugin-release-kit
@@ -77,53 +90,40 @@ jobs:
         run: |
           t="$TOOL_INPUT"
           [ -n "$t" ] || t="${GITHUB_REPOSITORY##*/}"
-          # Validate before it reaches a shell command or a filename.
-          case "$t" in
-            *[!a-zA-Z0-9._-]*) echo "invalid tool name: $t" >&2; exit 1 ;;
-          esac
+          case "$t" in *[!a-zA-Z0-9._-]*) echo "invalid tool name: $t" >&2; exit 1 ;; esac
           echo "name=$t" >> "$GITHUB_OUTPUT"
 
-      - name: GoReleaser (binary tarballs + checksums)
-        if: hashFiles('.goreleaser.yml', '.goreleaser.yaml') != ''
-        uses: goreleaser/goreleaser-action@v6
-        with:
-          distribution: goreleaser
-          version: "~> v2"
-          args: release --clean
+      - name: Validate version
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          V: ${{ inputs.version }}
+        run: |
+          case "$V" in
+            ''|*[!0-9.]*) echo "invalid version '$V' — want x.y.z (digits and dots)" >&2; exit 1 ;;
+          esac
 
-      - name: Verify signed darwin/arm64 binary executes
-        # Binary tools only: the macOS runner is Apple Silicon, so run the
-        # freshly ad-hoc-signed darwin/arm64 build. An unsigned arm64 binary is
-        # SIGKILL'd (rc >= 128) — fail the release instead of shipping a dead
-        # binary. No-op for skill-only tools (no dist binary).
-        if: hashFiles('.goreleaser.yml', '.goreleaser.yaml') != ''
+      - name: Bump version across the manifests
+        env:
+          V: ${{ inputs.version }}
+        run: bash _kit/bin/bump-version "$V" --repo .
+
+      - name: Stage binaries (build all arches, stamp version, sign darwin)
         env:
           TOOL: ${{ steps.tool.outputs.name }}
-        run: |
-          bin=$(find dist -type f -name "$TOOL" -path '*darwin*arm64*' 2>/dev/null | head -1)
-          [ -n "$bin" ] || { echo "no darwin/arm64 binary in dist — skipping"; exit 0; }
-          "$bin" version >/dev/null 2>&1; rc=$?
-          if [ "$rc" -ge 128 ]; then echo "FAIL: $bin killed by signal $((rc-128)) — ad-hoc signing did not take"; exit 1; fi
-          echo "OK: $bin executes (rc=$rc) — ad-hoc signature valid"
+        run: bash _kit/bin/stage-binaries --repo . --tool "$TOOL"
 
-      - name: Build self-contained plugin zip
-        # Write the zip to RUNNER_TEMP (outside the tool tree). build-plugin.sh
-        # itself only reads the tool repo + stages in its own tmpdir, so the tree
-        # stays clean.
+      - name: Commit the release to the default branch (gated by verify-release)
         env:
           TOOL: ${{ steps.tool.outputs.name }}
+          V: ${{ inputs.version }}
         run: |
-          bash _kit/bin/build-plugin.sh \
-            --repo . \
-            --tool "$TOOL" \
-            --ref "$GITHUB_REF_NAME" \
-            --out "$RUNNER_TEMP/$TOOL-plugin.zip"
-
-      - name: Attach plugin zip to the release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TOOL: ${{ steps.tool.outputs.name }}
-        run: |
-          gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP/$TOOL-plugin.zip" --clobber
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          # verify-release reads the index (git ls-files) and runs the committed
+          # binary's version smoke test — gate the release on 0 FAIL before push.
+          bash _kit/bin/verify-release --repo .
+          if git diff --cached --quiet; then
+            echo "nothing to commit — manifests + binaries already at v$V"; exit 0
+          fi
+          git commit -m "release $TOOL v$V"
+          git push origin "HEAD:${GITHUB_REF_NAME}"

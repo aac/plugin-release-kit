@@ -32,18 +32,23 @@ WRAP
   chmod +x "$dest"
 }
 
-# kit_build_arches <repo> <tool> <dest_bin_dir>
+# kit_build_arches <repo> <tool> <dest_bin_dir> [ldflags]
 # Cross-compile ./cmd/<tool> for every KIT_ARCHES target into <dest_bin_dir> as
 # <tool>-<os>-<arch>, ad-hoc-codesign the darwin binaries (an unsigned darwin/
 # arm64 binary is SIGKILL'd at launch), and write the launcher as
 # <dest_bin_dir>/<tool>. Returns non-zero on any build/sign failure.
+#
+# [ldflags] (optional) is passed verbatim to `go build -ldflags` — the caller
+# uses it to stamp the version (-X <module>/internal/version.Binary=<v>). This is
+# the ONLY place the committed binaries get a version: under the commit-to-main
+# model there is no release-time rebuild, so an unstamped binary ships as `dev`.
 #
 # Darwin signing requires macOS `codesign`; on a host without it this fails
 # rather than silently emit unsigned darwin binaries that would die for macOS
 # users. (The Go linker only auto-signs when target==host with no cross env, so
 # we sign explicitly to cover the cross-compiled darwin targets too.)
 kit_build_arches() {
-  local repo=$1 tool=$2 dest=$3
+  local repo=$1 tool=$2 dest=$3 ldflags=${4:-}
   [ -d "$repo/cmd/$tool" ] || { echo "lib-binaries: no cmd/$tool in $repo (not a binary tool)" >&2; return 1; }
   mkdir -p "$dest"
 
@@ -60,7 +65,8 @@ kit_build_arches() {
     os=${a%/*}; arch=${a#*/}
     out="$dest/$tool-$os-$arch"
     ( cd "$repo" && GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 \
-        go build -trimpath -o "$out" "./cmd/$tool" ) || { echo "lib-binaries: build failed for $a" >&2; return 1; }
+        go build -trimpath ${ldflags:+-ldflags "$ldflags"} -o "$out" "./cmd/$tool" ) \
+      || { echo "lib-binaries: build failed for $a" >&2; return 1; }
     if [ "$os" = darwin ]; then
       codesign --sign - --force "$out" >/dev/null 2>&1 || { echo "lib-binaries: codesign failed for $out" >&2; return 1; }
     fi

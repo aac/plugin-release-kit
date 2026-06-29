@@ -1,28 +1,31 @@
 #!/usr/bin/env bash
 # stage-binaries — cross-compile a binary tool's per-arch binaries + launcher
-# into its TRACKED bin/, ready for the maintainer to commit before tagging.
+# into its TRACKED bin/, version-stamped and darwin-signed, to be committed.
 #
-# Why this exists: a `"source": "./"` marketplace installs only tracked files,
-# and `/plugin install` never fetches GitHub Release assets — so the binary a
-# plugin's MCP server runs must be committed in the repo, not just built into a
-# release zip. This stages exactly what gets committed:
+# Why this exists: `/plugin install` (Claude and Codex) installs from the repo's
+# default branch and never fetches Release assets — so the binary a plugin's MCP
+# server runs must be COMMITTED in the repo. This stages exactly what gets
+# committed:
 #
 #   bin/<tool>               uname launcher shim (the .mcp.json command target)
-#   bin/<tool>-darwin-amd64  ad-hoc-codesigned
-#   bin/<tool>-darwin-arm64  ad-hoc-codesigned
-#   bin/<tool>-linux-amd64
-#   bin/<tool>-linux-arm64
+#   bin/<tool>-darwin-amd64  version-stamped + ad-hoc-codesigned
+#   bin/<tool>-darwin-arm64  version-stamped + ad-hoc-codesigned
+#   bin/<tool>-linux-amd64   version-stamped
+#   bin/<tool>-linux-arm64   version-stamped
 #
-# Darwin binaries are ad-hoc signed here (matching the release codesign step);
-# this MUST run on macOS, since an unsigned darwin/arm64 binary is SIGKILL'd at
-# launch and `codesign` is macOS-only.
+# The version (metadata.version, via skill-version) is stamped with
+# -ldflags -X <module>/internal/version.Binary=<v> — there is no release-time
+# rebuild under commit-to-main, so this stamp is the binaries' only version.
+# Darwin binaries are ad-hoc signed, so this MUST run on macOS (an unsigned
+# darwin/arm64 binary is SIGKILL'd at launch; `codesign` is macOS-only).
+#
+# Normally invoked by the prepare-release CI workflow (which then commits the
+# result to the default branch); also runnable locally to inspect what ships.
 #
 # Usage:
 #   stage-binaries [--repo <path>] [--tool <name>]
-#   (--repo defaults to cwd; --tool to the repo basename.)
-#
-# After it runs, review and commit the staged bin/ — then bump the version, add
-# the CHANGELOG entry, and tag. The committed bin/ at the tag is what ships.
+#   (--repo defaults to cwd; --tool to the repo basename.
+#    $STAGE_VERSION_VAR overrides the default ldflag var path.)
 set -euo pipefail
 
 REPO="" TOOL=""
@@ -49,9 +52,22 @@ KITBIN=$(CDPATH= cd -- "$(dirname -- "$self")" && pwd)
 
 [ -d "$REPO/cmd/$TOOL" ] || { echo "stage-binaries: $REPO has no cmd/$TOOL — skill-only tools ship no binary" >&2; exit 1; }
 
-echo "stage-binaries: building $TOOL into $REPO/bin ($KIT_ARCHES)"
-kit_build_arches "$REPO" "$TOOL" "$REPO/bin"
+# Resolve the version to stamp into the binaries. metadata.version (SKILL.md) is
+# the single source; there is no release-time rebuild under commit-to-main, so
+# this stamp is the binaries' only version. The ldflag var defaults to the family
+# convention <module>/internal/version.Binary (module read from go.mod); a tool
+# that puts its version var elsewhere overrides via $STAGE_VERSION_VAR. A wrong
+# path is silently ignored by the linker (binary reports `dev`) — verify-release's
+# version-match smoke test is the backstop that catches that.
+VERSION=$("$KITBIN/skill-version" --repo "$REPO") || { echo "stage-binaries: could not read metadata.version" >&2; exit 1; }
+MODULE=$( ( cd "$REPO" && go list -m 2>/dev/null ) || awk '/^module /{print $2; exit}' "$REPO/go.mod" )
+[ -n "$MODULE" ] || { echo "stage-binaries: could not determine go module path (need go.mod)" >&2; exit 1; }
+VERSION_VAR="${STAGE_VERSION_VAR:-$MODULE/internal/version.Binary}"
+LDFLAGS="-X $VERSION_VAR=$VERSION"
 
-echo "stage-binaries: staged — review and commit before tagging:"
+echo "stage-binaries: building $TOOL v$VERSION into $REPO/bin ($KIT_ARCHES)"
+echo "  stamping $VERSION_VAR=$VERSION"
+kit_build_arches "$REPO" "$TOOL" "$REPO/bin" "$LDFLAGS"
+
+echo "stage-binaries: staged — commit bin/ as part of the release:"
 ( cd "$REPO" && ls -l "bin/$TOOL" bin/"$TOOL"-* | sed 's/^/  /' )
-echo "  next: git add bin/ && git commit, then bump-version + tag."

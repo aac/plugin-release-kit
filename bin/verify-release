@@ -165,24 +165,34 @@ if [ "$IS_BINARY" = 1 ]; then
   done
   if [ -z "$miss" ]; then pass "committed bin/: launcher + per-arch binaries present ($KIT_ARCHES)"
   else fail "binary tool missing committed bin/ artifacts — run stage-binaries (un-gitignore bin/ first):$miss"; fi
-  # Execute smoke test: the committed binary for THIS host must actually run.
-  # Catches a corrupt/truncated/wrong-arch commit, a broken launcher, and — on
-  # macOS — an unsigned darwin/arm64 binary the kernel SIGKILLs (the exact way a
-  # plugin would install yet fail to start for a Mac user). Uses the `version`
-  # subcommand the release flow already relies on; only a signal-kill is fatal.
+  # Execute + version smoke test: the committed binary for THIS host must run AND
+  # report metadata.version. Catches (a) a corrupt/wrong-arch commit or broken
+  # launcher; (b) on macOS, an unsigned darwin/arm64 binary the kernel SIGKILLs
+  # (the exact way a plugin installs yet fails to start for a Mac user); and (c) a
+  # `dev`/stale stamp — under commit-to-main there is no release-time rebuild, so
+  # the committed binary's own version IS the shipped version and must match the
+  # single source. A wrong -ldflags var path is silently ignored by the linker, so
+  # this is the only thing that catches it.
   hostos=$(uname -s | tr '[:upper:]' '[:lower:]')
   hostarch=$(uname -m); case "$hostarch" in x86_64|amd64) hostarch=amd64 ;; aarch64|arm64) hostarch=arm64 ;; esac
+  WANT_VER=$("$KITBIN/skill-version" --repo "$REPO" 2>/dev/null)
   if [ -z "$miss" ] && [ -f "bin/$TOOL-$hostos-$hostarch" ]; then
     smoke=$("bin/$TOOL" version 2>&1); rc=$?
-    if [ "$rc" -ge 128 ]; then fail "committed bin/$TOOL killed by signal $((rc-128)) on $hostos/$hostarch — corrupt or unsigned (darwin needs ad-hoc codesign; re-run stage-binaries on macOS)"
-    else pass "committed bin/$TOOL executes on $hostos/$hostarch (rc=$rc)"; fi
+    if [ "$rc" -ge 128 ]; then
+      fail "committed bin/$TOOL killed by signal $((rc-128)) on $hostos/$hostarch — corrupt or unsigned (darwin needs ad-hoc codesign; re-run stage-binaries on macOS)"
+    elif [ -n "$WANT_VER" ] && ! printf '%s' "$smoke" | grep -qF "$WANT_VER"; then
+      fail "committed bin/$TOOL reports '$(printf '%s' "$smoke" | head -1 | tr -d '\r')' but metadata.version is '$WANT_VER' — unstamped (dev) or stale binary; stage-binaries must -ldflags -X <module>/internal/version.Binary=$WANT_VER"
+    else
+      pass "committed bin/$TOOL executes on $hostos/$hostarch and reports v$WANT_VER"
+    fi
   elif [ -z "$miss" ]; then
     info "no committed binary for this host ($hostos/$hostarch) — execute smoke test skipped"
   fi
-  wf=$(grep -rliE "build-plugin|plugin-release-kit|release-plugin\.yml" .github/workflows 2>/dev/null)
+  wf=$(grep -rliE "plugin-release-kit|release-plugin\.yml" .github/workflows 2>/dev/null)
   if [ -n "$wf" ]; then
-    # The reusable workflow runs with contents:write — require an immutable SHA
-    # pin (not a moving branch/tag), or a supply-chain change gains write access.
+    # The reusable prepare-release workflow commits to the default branch, so it
+    # runs with contents:write — require an immutable SHA pin (not a moving
+    # branch/tag), or a supply-chain change gains write access to the repo.
     badpin=$(grep -hoE "plugin-release-kit/[^@\"' ]*@[^ \"')]+" $wf 2>/dev/null | sed -E 's/.*@//' | grep -vE '^[0-9a-f]{40}$' | grep -v '^$' || true)
     if [ -n "$badpin" ]; then
       fail "reusable release workflow not pinned to a commit SHA (mutable ref '$badpin' = CI/CD supply-chain risk)"
@@ -191,7 +201,7 @@ if [ "$IS_BINARY" = 1 ]; then
       pinned=$(grep -hoE "plugin-release-kit/[^@\"' ]*@[0-9a-f]{40}" $wf 2>/dev/null | sed -E 's/.*@//' | head -1)
       kithead=$(git -C "$KITROOT" rev-parse HEAD 2>/dev/null)
       if [ -z "$pinned" ] || [ -z "$kithead" ]; then
-        pass "release workflow wires + SHA-pins the plugin-zip build"
+        pass "release workflow wires + SHA-pins the prepare-release workflow"
       elif [ "$pinned" = "$kithead" ]; then
         pass "release workflow SHA-pinned to current kit HEAD (${pinned:0:7})"
       elif git -C "$KITROOT" cat-file -e "$pinned" 2>/dev/null && git -C "$KITROOT" merge-base --is-ancestor "$pinned" "$kithead" 2>/dev/null; then
@@ -203,7 +213,7 @@ if [ "$IS_BINARY" = 1 ]; then
         warn "release workflow pins kit ${pinned:0:7} not in local kit history — git pull the kit to assess drift"
       fi
     fi
-  else fail "no release workflow wires the plugin-release-kit reusable workflow — binary-install tarballs + plugin zip won't be built (the committed bin/ delivers the install, the workflow delivers the fallbacks)"; fi
+  else fail "no release workflow wires the plugin-release-kit reusable workflow — nothing builds/commits the binaries that /plugin install ships (wire the prepare-release workflow)"; fi
   # MCP startup does NOT get the plugin's bin/ on PATH (that's Bash-tool-only), so
   # the command must reference the bundled launcher by absolute path. Claude
   # expands ${CLAUDE_PLUGIN_ROOT} to the plugin root — the documented mechanism.

@@ -26,8 +26,9 @@ while [ $# -gt 0 ]; do
 done
 
 mkdir -p "$BINDIR"
-# User-facing commands. Internal helpers (skill-version, build-plugin.sh) stay in
-# bin/ and are found by the commands via symlink-resolved sibling lookup.
+# User-facing commands. Internal helpers (skill-version, stage-binaries,
+# lib-binaries.sh) stay in bin/ and are found via symlink-resolved sibling lookup
+# (stage-binaries is invoked by the prepare-release workflow, not run by hand).
 for cmd in verify-release check-versions bump-version check-history gen-codex-marketplace; do
   ln -sfn "$KITBIN/$cmd" "$BINDIR/$cmd"
   echo "  linked $cmd -> $BINDIR/$cmd"

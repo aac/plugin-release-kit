@@ -1,6 +1,6 @@
 ---
 name: ship-plugin
-description: Use when shipping or releasing one of the agent-tools (ask, act, surface, reach, or a new sibling) as an installable plugin — cutting a release, running release-readiness checks, building or publishing the plugin zip, bumping the version, adopting a newer release kit, or deciding whether a repo is safe to go public. Fires on phrasings like "release ask", "ship this tool", "cut a vX.Y.Z", "is this ready to publish", "run the release checks", "make this a plugin". Drives the plugin-release-kit verifier and runbook, and knows the one-source version flow, the SHA-pin/drift discipline, and the human gates.
+description: Use when shipping or releasing one of the agent-tools (ask, act, surface, reach, or a new sibling) as an installable plugin — cutting a release, running release-readiness checks, triggering the prepare-release workflow, bumping the version, adopting a newer release kit, or deciding whether a repo is safe to go public. Fires on phrasings like "release ask", "ship this tool", "cut a release", "is this ready to publish", "run the release checks", "make this a plugin". Drives the plugin-release-kit verifier and runbook, and knows the commit-to-main release model, the one-source version flow, the SHA-pin/drift discipline, and the human gates.
 ---
 
 # ship-plugin — releasing an agent-tool as a plugin
@@ -18,9 +18,9 @@ anything this skill leaves implicit; it defers to the playbook.
 
 ## When this fires
 
-Any release-shaped intent on a tool repo: "ship/release this," "cut a tag," "is
-this ready to publish," "run the checks," "adopt the latest kit." Works from the
-tool repo or anywhere — it's directory-independent.
+Any release-shaped intent on a tool repo: "ship/release this," "cut a release,"
+"is this ready to publish," "run the checks," "adopt the latest kit." Works from
+the tool repo or anywhere — it's directory-independent.
 
 ## The release runbook (drive this end to end)
 
@@ -37,31 +37,31 @@ Run from the tool repo, with a `git pull`-current kit checkout.
    matters** to this tool. Never bump blindly: that re-introduces the
    supply-chain risk the immutable pin prevents. The WARN is non-fatal.
 
-3. **Version.** Confirm `metadata.version` in `SKILL.md` is the intended release
-   version (`bump-version <v> --repo .` to change everywhere; add the
-   `CHANGELOG.md` entry). `check-versions --repo .` must be clean.
+3. **Prepare the release (CI does it all).** Trigger the tool's `release.yml`
+   (`workflow_dispatch`) with the target `version`. On a macOS runner the kit's
+   reusable workflow bumps the version across the manifests, builds + version-
+   stamps + ad-hoc-signs all arches into `bin/`, gates on `verify-release`, and
+   **commits the result to the default branch**. No tags, no GitHub Releases, no
+   tarballs, nothing built locally. (Add the `CHANGELOG.md` entry in a normal
+   commit — the workflow doesn't touch it.)
 
-4. **Tag.** `git tag vX.Y.Z -m "…" && git push origin vX.Y.Z`. The release workflow
-   builds the binary tarballs + the self-contained plugin zip and attaches both to
-   a **draft** GitHub Release.
+4. **Confirm it landed.** The new commit is on the default branch with the bumped
+   `version`. `/plugin install <tool>@<tool>` (Claude) and `codex plugin
+   marketplace upgrade` + `codex plugin add` (Codex) pull it; smoke the MCP server
+   once per host on a real install.
 
-5. **Confirm artifacts** on the draft: 4 tarballs + `checksums.txt` +
-   `<tool>-plugin.zip` (zip carries multi-arch binary + launcher + `skills/` +
-   `.claude-plugin` + `.codex-plugin` + `.mcp.json`).
-
-6. **History check (before a first public release):** `check-history --repo .`.
+5. **History check (before a first public release):** `check-history --repo .`.
    Clean → no repave (the normal case for a tool built verifier-green from commit
    one). Leaks (a legacy repo) → a **one-time privacy repave** is needed — this is
    a **HUMAN** action; surface it as an ask and stop.
 
-7. **HUMAN GATE — flip to public.** Going public is a deliberate call. Surface it
-   as an ask; do not change repo visibility or rewrite history yourself.
+6. **HUMAN GATE — flip to public.** Going public is a deliberate call. Surface it
+   as an ask; do not change repo visibility or rewrite history yourself. There is
+   no separate publish step — the commit in step 3 already released; flipping the
+   repo public is what exposes it.
 
-8. **Publish:** flip GoReleaser `draft: true → false` once the first tagged run is
-   validated end to end, then publish.
-
-For a still-private tool, steps 1–6 are the whole loop; escalate the human gate
-(7) as an ask and stop.
+For a still-private tool, steps 1–5 are the whole loop; escalate the human gate
+(6) as an ask and stop.
 
 ## Discipline (the load-bearing bits)
 

@@ -10,13 +10,13 @@ It holds:
   in the playbook is an assertion here, so drift becomes a failing check instead
   of a hand-rediscovered stale path.
 - **`bin/stage-binaries`** — cross-compiles a binary tool's per-arch binaries +
-  launcher into its tracked `bin/` (ad-hoc-signing darwin), for the maintainer to
-  commit before tagging. `/plugin install` only delivers tracked files, so the
-  binary must be committed, not just built into a release zip.
-- **`bin/build-plugin.sh`** — assembles a self-contained `<tool>-plugin.zip` from
-  `git archive` of the committed tree (skill + manifests + the committed `bin/`).
-- **`.github/workflows/release-plugin.yml`** — a reusable (`workflow_call`)
-  release pipeline. Each tool's `release.yml` is a thin caller.
+  launcher into its tracked `bin/`, version-stamped and darwin-signed. `/plugin
+  install` (Claude and Codex) installs from the default branch, so the binary must
+  be committed there. Run by the prepare-release workflow.
+- **`.github/workflows/release-plugin.yml`** — the reusable prepare-release
+  pipeline (`workflow_dispatch`-triggered): bump version → build + stamp + sign →
+  verify → **commit to the default branch**. Each tool's `release.yml` is a thin
+  caller. No tags, no GitHub Releases, no tarballs.
 
 (Plus `bin/lib-binaries.sh` — the single definition of the arch list + launcher
 shared by `stage-binaries` and `verify-release` — and version helpers.)
@@ -58,24 +58,30 @@ In the tool repo's `.github/workflows/release.yml`:
 ```yaml
 name: Release
 on:
-  push:
-    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "x.y.z"
+        required: true
 jobs:
   release:
-    # SECURITY: this reusable workflow runs with `contents: write`. Pin it to an
-    # immutable commit SHA, never a moving branch/tag (`@main`/`@v1`), so a
-    # supply-chain change can't gain write access to your repo. Bump the SHA
-    # deliberately when adopting kit changes.
+    # SECURITY: this reusable workflow COMMITS to your default branch, so it runs
+    # with `contents: write`. Pin it to an immutable commit SHA, never a moving
+    # branch/tag (`@main`/`@v1`), so a supply-chain change can't gain write access
+    # to your repo. Bump the SHA deliberately when adopting kit changes.
     uses: aac/plugin-release-kit/.github/workflows/release-plugin.yml@<commit-sha>
     with:
-      tool: <tool>   # optional; defaults to the repo name
+      tool: <tool>                    # optional; defaults to the repo name
+      version: ${{ inputs.version }}
     permissions:
       contents: write
 ```
 
-On a `vX.Y.Z` tag this builds the binary tarballs (via the tool's own
-`.goreleaser.yml`) and the self-contained plugin zip, attaching both to a draft
-GitHub Release.
+Triggered on demand, this bumps the version across the manifests, builds +
+version-stamps + ad-hoc-signs the per-arch binaries into `bin/`, gates on
+`verify-release`, and commits the result to your default branch. That commit (with
+its bumped `version`) is the release — `/plugin install`/`update` and
+`codex plugin marketplace upgrade` pull it. No tags, no GitHub Releases.
 
 ## License
 
