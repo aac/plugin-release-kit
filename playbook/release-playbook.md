@@ -120,6 +120,14 @@ history. UPX/LFS optimization is a **deliberate deferred follow-up** — correct
   `bin/check-versions` to gate drift — the verifier's [check 2] calls the latter,
   so there is exactly one version mechanism, not a per-repo copy. The Codex
   marketplace is version-less (see Marketplaces). [check 2]
+- **The binary's *runtime* version has one source too.** Everywhere the binary
+  reports its own version — the `version` subcommand AND the MCP `initialize`
+  response's `serverInfo.version` — must read the single stamped source
+  (`internal/version.Binary`, set by the release `-ldflags -X`). Never a second
+  hardcoded literal: a `const serverVersion = "0.1.0"` in the MCP server passes
+  the `version`-subcommand smoke yet drifts on every release (this shipped in ask
+  0.2.0). [check 7] drives an initialize handshake against the staged binary and
+  fails if `serverInfo.version` ≠ the release version.
 - Claude auto-discovers `skills/` and `.mcp.json`, so `.claude-plugin/plugin.json`
   is minimal. Codex does not auto-discover, so `.codex-plugin/plugin.json` must
   carry explicit component pointers for whatever it bundles — `"skills":
