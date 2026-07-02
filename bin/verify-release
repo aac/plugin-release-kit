@@ -378,8 +378,12 @@ if [ -f "$CM" ] && json_ok "$CM"; then
   [ "$cver" != "__MISS__" ] && warn "$CM: plugins[].version present — Codex keeps version in the plugin manifest, not the marketplace"
   inst=$(jget "$CM" plugins.0.policy.installation)
   case "$inst" in AVAILABLE|INSTALLED_BY_DEFAULT|NOT_AVAILABLE) : ;; *) fail "$CM: policy.installation '$inst' invalid (AVAILABLE|INSTALLED_BY_DEFAULT|NOT_AVAILABLE)"; cmok=0 ;; esac
+  # Enum values verified against real Codex (codex-cli 0.141.0 rejects ON_FIRST_USE:
+  # "unknown variant, expected ON_INSTALL or ON_USE"). The kit previously generated
+  # AND validated ON_FIRST_USE — producer and checker paraphrasing the same wrong
+  # value, so it passed here yet blocked every real `codex plugin marketplace add`.
   authp=$(jget "$CM" plugins.0.policy.authentication)
-  case "$authp" in ON_INSTALL|ON_FIRST_USE) : ;; *) fail "$CM: policy.authentication '$authp' invalid (ON_INSTALL|ON_FIRST_USE)"; cmok=0 ;; esac
+  case "$authp" in ON_INSTALL|ON_USE) : ;; *) fail "$CM: policy.authentication '$authp' invalid (Codex accepts ON_INSTALL|ON_USE)"; cmok=0 ;; esac
   [ "$cmok" = 1 ] && pass "Codex-native marketplace present + valid policy ($CM)"
 else
   fail "missing Codex-native marketplace $CM (Codex reads .agents/plugins/marketplace.json)"
