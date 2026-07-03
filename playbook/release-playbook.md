@@ -240,6 +240,14 @@ a tool that ships rarely).
    `codex plugin marketplace upgrade` + `codex plugin add` (Codex) pull it. Smoke
    it once on a real install per host (MCP server starts from the bundled binary).
 
+   > **Codex upgrade gotcha.** `codex plugin marketplace upgrade <name>` re-clones
+   > the marketplace's git source and frequently fails with a 30s clone timeout
+   > (`fatal: early EOF`) on larger repos. This is a transient Codex-CLI network
+   > flake, **not** a release failure — and it does not block the upgrade:
+   > `codex plugin add <name>@<name>` resolves and installs the new version on its
+   > own (verify with `codex plugin list`). Treat `plugin add` as the reliable
+   > upgrade path; don't conclude the release is broken from an `upgrade` timeout.
+
 5. **History check (before a first public release):**
    `<kit>/bin/check-history --repo .`. Clean (the normal case for a tool built
    verifier-green from commit one) → no repave; go to 6. Leaks (a legacy repo
