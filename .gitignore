@@ -2,6 +2,10 @@
 .claude/
 *.lock
 .DS_Store
+# Operator session-continuity doc — an internal artifact (see verify-release
+# check [14]); it is how the work gets done, not the project a contributor
+# consumes, so it stays out of this public repo.
+docs/session-handoff.md
 
 # Build artifacts
 dist/
