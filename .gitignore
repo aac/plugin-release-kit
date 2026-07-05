@@ -6,6 +6,9 @@
 # check [14]); it is how the work gets done, not the project a contributor
 # consumes, so it stays out of this public repo.
 docs/session-handoff.md
+# Design/review operator notes (briefs, review rounds) — same rationale: how the
+# work gets done, not the shipped project. Kept local, never tracked/shipped.
+docs/payload-allowlist-notes/
 
 # Build artifacts
 dist/
