@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+# check-changelog — CHANGELOG.md release hygiene for commit-to-main plugins.
+#
+# Under commit-to-main a "release" is a version bump committed to the default
+# branch; nothing else guards or drafts the CHANGELOG, and `bump-version`
+# deliberately leaves it to the human. This provides the two pieces that keep the
+# human in the loop without doing it FOR them:
+#
+#   check-changelog [--repo <path>] [--version <v>]       (guard, the default)
+#       Exit 1 if CHANGELOG.md exists but carries no non-empty entry for the
+#       release — i.e. neither a '## [<version>]' section nor a non-empty
+#       '## [Unreleased]'. Exit 0 (skip) when there is no CHANGELOG.md, since not
+#       every tool keeps one. This is the guard against cutting a release whose
+#       changelog is blank. --version defaults to the tool's canonical version
+#       (SKILL.md metadata.version, via the sibling skill-version).
+#
+#   check-changelog --draft [--repo <path>] [--since <ref>]
+#       Print a draft '## [Unreleased]' body, grouped by conventional-commit type,
+#       built from the commit range since the last release commit (subject
+#       'release ...') or --since <ref>. Prints to stdout for the human to paste
+#       and edit into CHANGELOG.md — it NEVER writes the file. Automate the guard
+#       and the draft, not the commit.
+set -uo pipefail
+
+REPO="" VERSION="" SINCE="" DRAFT=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo) REPO=$2; shift 2 ;;
+    --version) VERSION=$2; shift 2 ;;
+    --since) SINCE=$2; shift 2 ;;
+    --draft) DRAFT=1; shift ;;
+    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+    *) echo "check-changelog: unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+[ -n "$REPO" ] || REPO=$(pwd)
+[ -e "$REPO/.git" ] || { echo "check-changelog: not a git repo: $REPO" >&2; exit 2; }
+# Resolve $0 through symlinks so the sibling skill-version is found on PATH.
+self="$0"; while [ -L "$self" ]; do t=$(readlink "$self"); case "$t" in /*) self="$t" ;; *) self="$(dirname "$self")/$t" ;; esac; done
+HERE=$(CDPATH= cd -- "$(dirname -- "$self")" && pwd)
+
+CL="$REPO/CHANGELOG.md"
+
+if [ "$DRAFT" = 1 ]; then
+  # Range: since the last release commit (commit-to-main uses 'release <tool> vX'
+  # subjects; the caller's release.yml commits exactly that) unless --since given.
+  if [ -z "$SINCE" ]; then
+    SINCE=$(git -C "$REPO" log --format='%H' --grep='^release ' -1 2>/dev/null)
+  fi
+  if [ -n "$SINCE" ]; then range="$SINCE..HEAD"; else range="HEAD"; fi
+  # Subjects go through the environment, not a pipe: `python3 -` already consumes
+  # stdin for the heredoc program, so a piped git-log would never reach sys.stdin.
+  CL_SUBJECTS=$(git -C "$REPO" log --no-merges --format='%s' "$range" 2>/dev/null) \
+  python3 - <<'PY'
+import os
+subjects = [l for l in os.environ.get("CL_SUBJECTS", "").splitlines() if l.strip()]
+# Keep-a-Changelog buckets; map conventional-commit types onto them. Non-user-
+# facing types (docs/chore/test/ci/build/style) are dropped from a user-facing
+# changelog draft.
+BUCKET = {
+    "feat": "Added", "fix": "Fixed", "perf": "Changed",
+    "refactor": "Changed", "revert": "Changed",
+}
+ORDER = ["Added", "Changed", "Fixed", "Removed", "Deprecated", "Security"]
+groups = {k: [] for k in ORDER}
+import re
+pat = re.compile(r'^(\w+)(?:\(([^)]*)\))?(!)?:\s*(.*)$')
+for s in subjects:
+    m = pat.match(s)
+    if not m:
+        # Non-conventional subject — surface under Changed so nothing is silently lost.
+        groups["Changed"].append(s)
+        continue
+    typ, scope, bang, desc = m.groups()
+    typ = typ.lower()
+    if bang or typ in ("feat", "fix", "perf", "refactor", "revert"):
+        bucket = "Changed" if bang and typ not in BUCKET else BUCKET.get(typ, "Changed")
+        if bang:
+            desc = "**BREAKING** " + desc
+        entry = f"{scope}: {desc}" if scope else desc
+        groups[bucket].append(entry)
+    # else: dropped (docs/chore/test/ci/build/style)
+print("## [Unreleased]\n")
+any_out = False
+for k in ORDER:
+    if groups[k]:
+        any_out = True
+        print(f"### {k}")
+        for e in groups[k]:
+            print(f"- {e}")
+        print()
+if not any_out:
+    print("_No user-facing commits in range — nothing to draft._")
+PY
+  exit 0
+fi
+
+# --- guard mode ---
+if [ ! -f "$CL" ]; then
+  echo "check-changelog: no CHANGELOG.md — skipped (tool keeps no changelog)"
+  exit 0
+fi
+[ -n "$VERSION" ] || VERSION=$(python3 "$HERE/skill-version" --repo "$REPO" 2>/dev/null || true)
+
+python3 - "$CL" "$VERSION" <<'PY'
+import sys, re
+path, version = sys.argv[1], sys.argv[2]
+lines = open(path, encoding="utf-8").read().splitlines()
+
+# Split into (label, body-lines) sections on '## ' headings. Label is the text in
+# the first [...] of the heading, else the raw heading text.
+sections = []
+cur_label, cur_body = None, []
+def heading_label(h):
+    m = re.search(r'\[([^\]]+)\]', h)
+    return (m.group(1) if m else h[3:].strip()).strip()
+for ln in lines:
+    if ln.startswith("## "):
+        if cur_label is not None:
+            sections.append((cur_label, cur_body))
+        cur_label, cur_body = heading_label(ln), []
+    elif cur_label is not None:
+        cur_body.append(ln)
+if cur_label is not None:
+    sections.append((cur_label, cur_body))
+
+def nonempty(body):
+    for ln in body:
+        s = ln.strip()
+        if not s:
+            continue
+        if s.startswith("<!--") or s.startswith("#"):
+            continue
+        return True
+    return False
+
+secmap = {}
+for label, body in sections:
+    # first occurrence wins for the has-content question
+    secmap.setdefault(label.lower(), nonempty(body))
+
+ver = version.strip()
+# A release entry is satisfied by a non-empty [<version>] OR a non-empty [Unreleased].
+if ver and secmap.get(ver.lower()):
+    print(f"CHANGELOG.md: [{ver}] section has content — ok")
+    sys.exit(0)
+if secmap.get("unreleased"):
+    print("CHANGELOG.md: [Unreleased] section has content — ok")
+    sys.exit(0)
+
+# Failure — differentiate the cause for the reader.
+if "unreleased" in secmap:
+    print(f"CHANGELOG.md: [Unreleased] is empty and no non-empty [{ver or '<version>'}] section — "
+          "fill it (or run: check-changelog --draft) before cutting a release", file=sys.stderr)
+else:
+    print(f"CHANGELOG.md: no non-empty [Unreleased] or [{ver or '<version>'}] section — "
+          "add release notes (or run: check-changelog --draft) before cutting a release", file=sys.stderr)
+sys.exit(1)
+PY

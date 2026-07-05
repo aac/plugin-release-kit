@@ -136,6 +136,15 @@ history. UPX/LFS optimization is a **deliberate deferred follow-up** — correct
   block is optional install-surface metadata — recommended for published plugins,
   not required for a valid manifest. [check 11]
 - The skill description stays within Codex's 1024-char limit. [check 10]
+- **The CHANGELOG carries the release notes.** Commit-to-main has no git tag or
+  GitHub Release to hold a release body, so `CHANGELOG.md` is the only place it
+  lives, and `bump-version` deliberately leaves authoring it to the human. [check
+  15] guards that a release isn't cut with a blank changelog — it fails when a
+  present `CHANGELOG.md` has no non-empty `## [Unreleased]` (or `## [<version>]`)
+  section, and skips when a tool keeps no changelog. Draft the entry from the
+  commit range with `bin/check-changelog --draft` (groups conventional commits by
+  type since the last release commit); the guard and the draft are automated, the
+  commit stays human. [check 15]
 
 ## Marketplaces: Claude and Codex
 
@@ -236,8 +245,10 @@ a tool that ships rarely).
    `stage-binaries`, runs `verify-release` as a gate (0 FAIL), and **commits the
    result to the default branch**. No tag, no GitHub Release, nothing built
    locally. Skill-only tools have no binaries to build but still bump + commit the
-   version. (Add the `CHANGELOG.md` entry in a normal commit; the workflow does not
-   touch it.)
+   version. (Add the `CHANGELOG.md` entry in a normal commit *before* dispatching —
+   `bin/check-changelog --draft` drafts it from the commit range; the workflow's
+   `verify-release` gate [check 15] fails the release if the changelog has no
+   release notes, and the workflow never edits it.)
 
 4. **Confirm the release landed.** The new commit is on the default branch with
    the bumped `version`; `/plugin install <tool>@<tool>` (Claude) and

@@ -47,4 +47,6 @@ for p in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json", ".claude-pl
 PY
 
 echo "Bumped all version-bearing manifests to $new."
-echo "Next: add a '## [$new]' section to CHANGELOG.md, then run check-versions"
+echo "Next: add a '## [$new]' section to CHANGELOG.md (draft it with"
+echo "      'check-changelog --draft'), then run check-versions. verify-release's"
+echo "      changelog guard fails the release if the CHANGELOG has no release notes."

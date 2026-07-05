@@ -63,3 +63,30 @@ assert_out_has "docs/reviews/round1.md" "nested docs/ file is surfaced"
 r=$(mkrepo_docs no-docs)
 run "$VR" --repo "$r" --denylist "$EMPTY_DL"
 assert_out_has "no tracked docs/*.md outside the allowlist" "no-docs repo passes [14]"
+
+# --- check [15] changelog guard (only fires for plugin repos) ---
+# A .claude-plugin/ dir makes IS_PLUGIN_REPO=1. Other plugin checks FAIL on this
+# skeletal repo, so we assert on [15]'s OUTPUT, not the overall exit code.
+mkrepo_plugin_cl() {
+  local name=$1 cl=$2
+  local r; r=$(mkrepo "$name")
+  git -C "$r" remote add origin https://github.com/example/thing.git
+  mkdir -p "$r/.claude-plugin"
+  printf '{"plugins":[{"name":"thing","source":"./"}]}\n' > "$r/.claude-plugin/marketplace.json"
+  printf '# thing\n' > "$r/README.md"
+  [ -n "$cl" ] && printf '%b' "$cl" > "$r/CHANGELOG.md"
+  git -C "$r" add -A && git -C "$r" commit -qm init >/dev/null
+  printf '%s' "$r"
+}
+r=$(mkrepo_plugin_cl plugin-empty-cl '# Changelog\n\n## [Unreleased]\n')
+run "$VR" --repo "$r" --denylist "$EMPTY_DL"
+assert_out_has "[15] CHANGELOG carries release notes" "check [15] runs for plugin repos"
+assert_out_has "CHANGELOG has no release notes" "[15] fails an empty changelog"
+
+r=$(mkrepo_plugin_cl plugin-full-cl '# Changelog\n\n## [Unreleased]\n### Added\n- a thing\n')
+run "$VR" --repo "$r" --denylist "$EMPTY_DL"
+assert_out_has "[Unreleased] section has content" "[15] passes a filled changelog"
+
+r=$(mkrepo_plugin_cl plugin-no-cl '')
+run "$VR" --repo "$r" --denylist "$EMPTY_DL"
+assert_out_has "no CHANGELOG.md — changelog guard skipped" "[15] skips when no CHANGELOG"

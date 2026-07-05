@@ -461,6 +461,23 @@ else
   printf '%s' "$docmiss" | sed 's/^/       /'
 fi
 
+if [ "$IS_PLUGIN_REPO" = 1 ]; then
+echo "[15] CHANGELOG carries release notes"
+# Commit-to-main has no git tag or GitHub Release to hold the release body, so the
+# CHANGELOG is the only place it lives — and bump-version deliberately leaves it to
+# the human. Guard (via the canonical check-changelog) that a release isn't cut with
+# a blank changelog: fail on a present-but-empty CHANGELOG, skip when there's none.
+if clout=$("$KITBIN/check-changelog" --repo "$REPO" 2>&1); then
+  case "$clout" in
+    *"no CHANGELOG.md"*) info "no CHANGELOG.md — changelog guard skipped" ;;
+    *) pass "${clout#CHANGELOG.md: }" ;;
+  esac
+else
+  fail "CHANGELOG has no release notes (draft with: check-changelog --draft):"
+  printf '%s\n' "$clout" | sed 's/^/         /'
+fi
+fi
+
 echo
 total=$((FAILS+WARNS))
 if [ "$FAILS" -gt 0 ]; then

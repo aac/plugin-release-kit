@@ -1,44 +1,52 @@
 #!/usr/bin/env bash
 # check-history — history privacy scan.
-# Regression guard for act-141300: a denylist substring sitting incidentally
-# inside a committed BINARY must NOT be reported as a history leak (the -S pickaxe
-# searched blob bytes; the fix uses -G, which reads the textual diff and so skips
-# binaries). Real text-file leaks must still be caught.
+# Regression guard: a denylist substring sitting incidentally inside a committed
+# BINARY must NOT be reported as a history leak (the -S pickaxe searched blob
+# bytes; the fix uses -G, which reads the textual diff and so skips binaries).
+# Real text-file leaks must still be caught.
+#
+# NOTE: this file is tracked and public, so it must carry no real denylisted token
+# and no literal personal path — the kit's own verify-release [8]/[9] scan it.
+# We use a synthetic token ('/qcmd', in no denylist) and assemble the /home path
+# at runtime so the literal never appears in the source.
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 
 CH="$BIN/check-history"
+TOKEN="/qcmd"                       # stand-in for a private slash-command token
+DL="$WORK/dl"; printf '%s\n' "$TOKEN" > "$DL"
 
-# --- act-141300: denylist substring inside a committed binary is NOT a leak ---
+# --- denylist substring inside a committed binary is NOT a leak ---
 r=$(mkrepo bin-substr)
 # A file git treats as binary (embedded NUL) whose bytes incidentally contain the
-# denylist term as a substring — the exact "/wrap" inside "errors/wrap.go" shape.
-printf 'ELF\000\000stuff errors/wrap.go more\000\000tail' > "$r/tool-bin"
+# token as a substring of a package-path-like string — the false-positive shape.
+printf 'ELF\000\000stuff internal%s/x.go more\000\000tail' "$TOKEN" > "$r/tool-bin"
 git -C "$r" add -A && git -C "$r" commit -qm "commit a binary"
-printf '/wrap\n' > "$WORK/dl-wrap"
 # Sanity: git must actually classify the blob as binary, else the test proves nothing.
 if git -C "$r" show --numstat HEAD | grep -qE '^-[[:space:]]+-[[:space:]]+tool-bin'; then
   ok "fixture: committed tool-bin is a binary blob (numstat shows '- -')"
 else
   bad "fixture: tool-bin not detected as binary — test would not exercise the bug"
 fi
-run "$CH" --repo "$r" --denylist "$WORK/dl-wrap"
-assert_rc 0 "binary substring '/wrap' does not flag history as leaked"
+run "$CH" --repo "$r" --denylist "$DL"
+assert_rc 0 "binary substring does not flag history as leaked"
 assert_out_has "history is clean" "reports clean history for binary-only substring"
 
-# --- a REAL text-file leak of the same term IS still caught ---
+# --- a REAL text-file leak of the same token IS still caught ---
 r=$(mkrepo text-leak)
-printf 'run /wrap to finish\n' > "$r/notes.md"
+printf 'run %s to finish\n' "$TOKEN" > "$r/notes.md"
 git -C "$r" add -A && git -C "$r" commit -qm "leak in text"
-run "$CH" --repo "$r" --denylist "$WORK/dl-wrap"
-assert_rc 1 "text-file leak of '/wrap' is flagged"
+run "$CH" --repo "$r" --denylist "$DL"
+assert_rc 1 "text-file leak of the token is flagged"
 assert_out_has "appears in history" "names the leaked term"
 
 # --- personal/home path in history is still caught (existing behavior) ---
+# Assemble the path at runtime so this source file carries no literal home path.
+hp="/ho"; hp="${hp}me/nobody/secret"
 r=$(mkrepo path-leak)
-printf 'export P=/home/someone/secret\n' > "$r/env.sh"
+printf 'export P=%s\n' "$hp" > "$r/env.sh"
 git -C "$r" add -A && git -C "$r" commit -qm "path leak"
-run "$CH" --repo "$r" --denylist "$WORK/dl-wrap"
-assert_rc 1 "personal /home path in history is flagged"
+run "$CH" --repo "$r" --denylist "$DL"
+assert_rc 1 "personal home path in history is flagged"
 assert_out_has "personal/home paths" "reports the personal-path leak"
 
 # --- a denylist term with regex metacharacters matches LITERALLY (escaping) ---
@@ -50,14 +58,13 @@ git -C "$r" add -A && git -C "$r" commit -qm "axb"
 printf 'a.b\n' > "$WORK/dl-dot"
 run "$CH" --repo "$r" --denylist "$WORK/dl-dot"
 assert_rc 1 "literal 'a.b' leak is caught"
-# And the escaping means it matched the real literal, not via '.' wildcard: the
-# commit touching only "axb" must not itself be the (sole) reported hit. We assert
-# the literal-bearing commit is present in output.
+# Escaping means it matched the literal, not the '.' wildcard: the literal-bearing
+# commit must be the reported hit.
 assert_out_has "literal a.b" "matched the literal-'a.b' commit (metachar escaped)"
 
 # --- clean repo with a configured denylist exits 0 ---
 r=$(mkrepo clean)
 printf '# hello\n' > "$r/README.md"
 git -C "$r" add -A && git -C "$r" commit -qm "clean"
-run "$CH" --repo "$r" --denylist "$WORK/dl-wrap"
+run "$CH" --repo "$r" --denylist "$DL"
 assert_rc 0 "clean repo passes"

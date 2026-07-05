@@ -51,12 +51,12 @@ fi
 # Injected proper-noun denylist. Match via the -G pickaxe (diff-text), NOT -S
 # (blob-content): -S counts occurrences in the raw blob, so under commit-to-main
 # it matches a denylist substring sitting incidentally inside a committed BINARY
-# (e.g. term "/wrap" inside the Go stdlib path "errors/wrap.go" in a binary's
-# symbol table), spuriously flagging every binary-bearing commit as leaked history.
-# -G operates on the textual diff, which is empty for binary files, so it skips
-# them while still catching every real text-file leak. -G takes a regex, so each
-# term is ERE-escaped to match literally (matches the path scan above, which is
-# also -G). See act-141300.
+# (e.g. a short slash-prefixed command token appearing as a substring of a package
+# path like "internal/foo/foo.go" in the binary's symbol table), spuriously
+# flagging every binary-bearing commit as leaked history. -G operates on the
+# textual diff, which is empty for binary files, so it skips them while still
+# catching every real text-file leak. -G takes a regex, so each term is ERE-escaped
+# to match literally (matches the path scan above, which is also -G).
 esc_ere() { printf '%s' "$1" | sed 's/[.[\*^$(){}+?|\\]/\\&/g; s/]/\\]/g'; }
 if [ -n "$DL" ] && [ -f "$DL" ]; then
   while IFS= read -r t; do
