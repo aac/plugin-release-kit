@@ -7,12 +7,16 @@
 # would otherwise be rediscovered by hand. Run it locally during release prep
 # and as a CI gate.
 #
-#   verify-release [--repo <path>] [--denylist <file>] [--strict]
+#   verify-release [--repo <path>] [--denylist <file>] [--docs-allow <list>] [--strict]
 #
-#   --repo      target repo (default: cwd)
-#   --denylist  newline-separated proper-noun denylist file (names, handles,
-#               private command/project names). Overrides $PLUGIN_KIT_DENYLIST.
-#   --strict    treat WARN as failure too (exit 1 on any WARN)
+#   --repo       target repo (default: cwd)
+#   --denylist   newline-separated proper-noun denylist file (names, handles,
+#                private command/project names). Overrides $PLUGIN_KIT_DENYLIST.
+#   --docs-allow comma/newline-separated allowlist of tracked docs/*.md paths that
+#                are genuinely public (default: docs/spec.md). Overrides
+#                $PLUGIN_KIT_DOCS_ALLOW. Any tracked docs/*.md not listed is WARNed
+#                as a candidate internal artifact (check [14]).
+#   --strict     treat WARN as failure too (exit 1 on any WARN)
 #
 # PRIVACY MODEL — this script is public; it must contain zero personal data.
 #   * Personal *paths* are caught by generic patterns (/Users/<x>, /home/<x>)
@@ -25,13 +29,14 @@
 #   * The repo owner/org is *derived* from the target's git remote, not baked in.
 set -uo pipefail
 
-REPO="" DENYLIST_FILE="" STRICT=0
+REPO="" DENYLIST_FILE="" DOCS_ALLOW="" STRICT=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo) REPO=$2; shift 2 ;;
     --denylist) DENYLIST_FILE=$2; shift 2 ;;
+    --docs-allow) DOCS_ALLOW=$2; shift 2 ;;
     --strict) STRICT=1; shift ;;
-    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
     *) echo "verify-release: unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -422,6 +427,38 @@ case "$(jget .claude-plugin/plugin.json mcpServers)" in
   *) fail ".claude-plugin/plugin.json carries an 'mcpServers' key — Claude auto-discovers .mcp.json. Drop it; the pointer belongs only in .codex-plugin/plugin.json (check 11)."; cmok=0 ;;
 esac
 [ "$cmok" = 1 ] && pass ".claude-plugin/plugin.json carries no skills/mcpServers pointers (Claude auto-discovers)"
+fi
+
+echo "[14] tracked docs/ reviewed for internal artifacts"
+# ask 0.1.0 shipped docs/distribution-readiness.md — an internal readiness note —
+# to its public repo. It passed [8]/[9] (no personal paths, no denylisted nouns:
+# internal design prose carries neither), so the "is this an internal doc that
+# should not ship?" judgment was a human step, and it got skipped. The kit can't
+# know which docs are public per tool, so it SURFACES every tracked docs/*.md not
+# in a small allowlist as a candidate internal artifact to untrack before a public
+# flip. WARN (a review prompt), never FAIL — false positives cost only a glance.
+#
+# Allowlist: genuinely-public doc paths (repo-relative). Default below; extend
+# per-tool with --docs-allow "docs/a.md,docs/b.md" or $PLUGIN_KIT_DOCS_ALLOW
+# (comma- or newline-separated).
+DA="$DOCS_ALLOW"; [ -n "$DA" ] || DA="${PLUGIN_KIT_DOCS_ALLOW:-}"
+[ -n "$DA" ] || DA="docs/spec.md"
+docs_allow=$(printf '%s' "$DA" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$' || true)
+docmiss=""
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  # case globbing: * spans '/', so this matches docs/x.md and docs/sub/y.md alike.
+  case "$f" in docs/*.md) ;; *) continue ;; esac
+  printf '%s\n' "$docs_allow" | grep -qxF -- "$f" && continue
+  docmiss="$docmiss  $f"$'\n'
+done <<EOF
+$TRACKED
+EOF
+if [ -z "$docmiss" ]; then
+  pass "no tracked docs/*.md outside the allowlist"
+else
+  warn "tracked docs/*.md outside the allowlist — candidate internal artifacts; untrack (gitignore) or add to --docs-allow before flipping public:"
+  printf '%s' "$docmiss" | sed 's/^/       /'
 fi
 
 echo

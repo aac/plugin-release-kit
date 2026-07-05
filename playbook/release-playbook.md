@@ -171,8 +171,12 @@ The shipped surface must be generic and personal-context-free. Default to
   are working drafts: fold the salvageable content into the canonical file
   (replacing whatever the migration superseded), then delete the draft. [check 5]
 - **Untrack internal process docs** — session-handoffs, plan/brief/review rounds,
-  dogfood logs — before shipping. They are how the work gets done, not the project
-  a contributor consumes. (Surfaced by checks 8/9 flagging tracked `docs/`.)
+  dogfood logs, readiness notes — before shipping. They are how the work gets done,
+  not the project a contributor consumes. An internal doc that carries no personal
+  path or denylisted noun (design prose usually doesn't) slips past checks 8/9, so
+  [check 14] surfaces every tracked `docs/*.md` outside a small allowlist
+  (`docs/spec.md` by default; extend with `--docs-allow` or `$PLUGIN_KIT_DOCS_ALLOW`)
+  as a candidate to untrack. WARN, not FAIL — the ship/untrack call stays human.
 - `CLAUDE.md` is a thin pointer; build-side guidance ships as `AGENTS.md` (vendor
   -neutral — Codex and others read it; `CLAUDE.md` is Anthropic-specific); personal
   prefs/permissions stay in a gitignored `.claude/settings.local.json`. [check 12]
