@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# stage-payload — curate a tool repo's shipped plugin PAYLOAD into a dist/ subtree,
+# copying ONLY the allowlisted tracked files (bin/, skills/, manifests, README,
+# LICENSE, ...). This is the mechanism that decouples the install from the work
+# tree: `/plugin install` ships every tracked file of a "source":"./" repo, so to
+# ship a curated subset the marketplace source points at this curated dist/ instead
+# (source "local"/"git-subdir" -> ./dist), and CI runs stage-payload to build it.
+#
+# Sibling to stage-binaries: stage-binaries produces the committed bin/ (the compiled
+# artifacts); stage-payload produces the committed dist/ (the shipped tree, which
+# includes a copy of bin/). Fail-closed: only files matching the allowlist in
+# lib-payload.sh are copied — a new internal doc, a *.revised.md draft, an operator
+# handoff, or a _kit/ is never copied, so it can never install, without anyone having
+# to remember to gitignore it. Excluded tracked files are SURFACED (stderr) so a
+# legitimately-shipped file the allowlist wrongly omits is visible, not silently lost.
+#
+# Usage:
+#   stage-payload [--repo <path>] [--out <dir>] [--list] [--payload-allow <csv>]
+#     --repo          target repo (default: cwd)
+#     --out           output dir for the curated tree (default: <repo>/dist)
+#     --list          print the payload (SHIP set) to stdout and the excluded set to
+#                     stderr; DO NOT copy. A preview.
+#     --payload-allow extra allow patterns (comma/newline), added to the default
+#                     allowlist. Overrides $PLUGIN_KIT_PAYLOAD_ALLOW.
+set -euo pipefail
+
+REPO="" OUT="" LIST=0 EXTRA=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo) REPO=$2; shift 2 ;;
+    --out) OUT=$2; shift 2 ;;
+    --list) LIST=1; shift ;;
+    --payload-allow) EXTRA=$2; shift 2 ;;
+    -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
+    *) echo "stage-payload: unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+[ -n "$REPO" ] || REPO=$(pwd)
+REPO=$(CDPATH= cd -- "$REPO" && pwd)
+[ -e "$REPO/.git" ] || { echo "stage-payload: not a git repo: $REPO" >&2; exit 1; }
+[ -n "$EXTRA" ] || EXTRA="${PLUGIN_KIT_PAYLOAD_ALLOW:-}"
+[ -n "$OUT" ] || OUT="$REPO/dist"
+
+self="$0"; while [ -L "$self" ]; do t=$(readlink "$self"); case "$t" in /*) self="$t" ;; *) self="$(dirname "$self")/$t" ;; esac; done
+KITBIN=$(CDPATH= cd -- "$(dirname -- "$self")" && pwd)
+# shellcheck source=lib-payload.sh
+. "$KITBIN/lib-payload.sh"
+
+# Partition the tracked file list. Fail-closed lives in lib-payload (default DROP).
+part=$(cd "$REPO" && git ls-files | payload_partition "$EXTRA")
+ship=$(printf '%s\n' "$part" | sed -n 's/^SHIP\t//p')
+drop=$(printf '%s\n' "$part" | sed -n 's/^DROP\t//p')
+nship=$(printf '%s\n' "$ship" | grep -c . || true)
+ndrop=$(printf '%s\n' "$drop" | grep -c . || true)
+
+if [ "$LIST" = 1 ]; then
+  printf '%s\n' "$ship"
+  {
+    echo "stage-payload: $nship file(s) ship; $ndrop excluded (not in payload allowlist):"
+    printf '%s\n' "$drop" | sed 's/^/  - /'
+  } >&2
+  exit 0
+fi
+
+# Refuse to wipe something we shouldn't. OUT must not be the repo root or filesystem root.
+case "$OUT" in
+  "$REPO"|"$REPO"/|/|"") echo "stage-payload: refusing to write payload to '$OUT' (repo root or /)" >&2; exit 1 ;;
+esac
+
+rm -rf -- "$OUT"
+mkdir -p "$OUT"
+printf '%s\n' "$ship" | while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  mkdir -p "$OUT/$(dirname -- "$f")"
+  cp -p "$REPO/$f" "$OUT/$f"
+done
+
+echo "stage-payload: curated $nship file(s) into $OUT ($ndrop tracked file(s) excluded)"
+echo "  excluded (surfaced so nothing load-bearing is silently dropped):"
+printf '%s\n' "$drop" | sed 's/^/    /'
+echo "  the marketplace source should point at this curated tree (source \"local\"/\"git-subdir\" -> ./dist)"

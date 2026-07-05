@@ -7,16 +7,20 @@
 # would otherwise be rediscovered by hand. Run it locally during release prep
 # and as a CI gate.
 #
-#   verify-release [--repo <path>] [--denylist <file>] [--docs-allow <list>] [--strict]
+#   verify-release [--repo <path>] [--denylist <file>] [--docs-allow <list>]
+#                  [--payload-allow <list>] [--strict]
 #
-#   --repo       target repo (default: cwd)
-#   --denylist   newline-separated proper-noun denylist file (names, handles,
-#                private command/project names). Overrides $PLUGIN_KIT_DENYLIST.
-#   --docs-allow comma/newline-separated allowlist of tracked docs/*.md paths that
-#                are genuinely public (default: docs/spec.md). Overrides
-#                $PLUGIN_KIT_DOCS_ALLOW. Any tracked docs/*.md not listed is WARNed
-#                as a candidate internal artifact (check [14]).
-#   --strict     treat WARN as failure too (exit 1 on any WARN)
+#   --repo          target repo (default: cwd)
+#   --denylist      newline-separated proper-noun denylist file (names, handles,
+#                   private command/project names). Overrides $PLUGIN_KIT_DENYLIST.
+#   --docs-allow    comma/newline-separated allowlist of tracked docs/*.md paths that
+#                   are genuinely public (default: docs/spec.md). Overrides
+#                   $PLUGIN_KIT_DOCS_ALLOW. Any tracked docs/*.md not listed is WARNed
+#                   as a candidate internal artifact (check [14]).
+#   --payload-allow comma/newline-separated EXTRA payload allowlist patterns added to
+#                   the minimum default (bin/, skills/, manifests, README, LICENSE,
+#                   ...). Overrides $PLUGIN_KIT_PAYLOAD_ALLOW. Used by check [16].
+#   --strict        treat WARN as failure too (exit 1 on any WARN)
 #
 # PRIVACY MODEL — this script is public; it must contain zero personal data.
 #   * Personal *paths* are caught by generic patterns (/Users/<x>, /home/<x>)
@@ -29,14 +33,15 @@
 #   * The repo owner/org is *derived* from the target's git remote, not baked in.
 set -uo pipefail
 
-REPO="" DENYLIST_FILE="" DOCS_ALLOW="" STRICT=0
+REPO="" DENYLIST_FILE="" DOCS_ALLOW="" PAYLOAD_ALLOW_EXTRA="" STRICT=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo) REPO=$2; shift 2 ;;
     --denylist) DENYLIST_FILE=$2; shift 2 ;;
     --docs-allow) DOCS_ALLOW=$2; shift 2 ;;
+    --payload-allow) PAYLOAD_ALLOW_EXTRA=$2; shift 2 ;;
     --strict) STRICT=1; shift ;;
-    -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
     *) echo "verify-release: unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -57,6 +62,10 @@ KITROOT=$(dirname "$KITBIN")
 # history scan agree on semantics (act-5972d5).
 # shellcheck source=lib-denylist.sh
 . "$KITBIN/lib-denylist.sh"
+# Minimum payload allowlist, shared with stage-payload so [16] and the curation
+# producer read one list and cannot drift (act-c3a9bb).
+# shellcheck source=lib-payload.sh
+. "$KITBIN/lib-payload.sh"
 cd "$REPO"
 
 FAILS=0 WARNS=0
@@ -112,8 +121,23 @@ echo "[1] per-repo self-marketplace"
 MP=.claude-plugin/marketplace.json
 if [ -f "$MP" ] && json_ok "$MP"; then
   src=$(jget "$MP" plugins.0.source)
-  if [ "$src" = "./" ]; then pass "marketplace.json present, source \"./\" (surface model)"
-  else fail "marketplace.json source is \"$src\", expected \"./\" (per-repo self-marketplace)"; fi
+  # Two valid shapes: the string "./" (per-repo self-marketplace, ships the whole
+  # tracked tree) OR a curated-dist object source that points the install at a
+  # stage-payload-built subtree (source "local"/"git-subdir" with path under ./dist).
+  # The latter is what a tool adopts to enforce the payload allowlist [16] — accept
+  # it here so adoption isn't self-blocked. Anything else is still a fail.
+  srcpath=$(jget "$MP" plugins.0.source.path)
+  if [ "$src" = "./" ]; then pass "marketplace.json present, source \"./\" (per-repo self-marketplace)"
+  else
+    case "$src" in
+      \{*)  # object source (local / git-subdir / url)
+        case "$srcpath" in
+          ./dist|./dist/*) pass "marketplace.json present, curated-dist source (path \"$srcpath\") — install ships the stage-payload tree" ;;
+          *) fail "marketplace.json object source path \"$srcpath\" is not under ./dist — a curated-payload source must point at the stage-payload-built dist/ (or use source \"./\")"; ;;
+        esac ;;
+      *) fail "marketplace.json source is \"$src\", expected \"./\" or a curated-dist object source (path under ./dist)"; ;;
+    esac
+  fi
   # Older Claude Code (e.g. 2.1.91) rejects a top-level "$schema" key in
   # marketplace.json under `plugin validate` (Unrecognized key). Current
   # releases accept it, so this is a forward/back-compat warn, not a fail.
@@ -483,6 +507,94 @@ if clout=$("$KITBIN/check-changelog" --repo "$REPO" 2>&1); then
 else
   fail "CHANGELOG has no release notes (draft with: check-changelog --draft):"
   printf '%s\n' "$clout" | sed 's/^/         /'
+fi
+fi
+
+if [ "$IS_PLUGIN_REPO" = 1 ]; then
+echo "[16] shipped payload curated to a minimum allowlist"
+# `/plugin install` ships every tracked file of a "source":"./" repo — the whole dev
+# work tree, not a curated product. This check makes the payload an ALLOWLIST (not a
+# denylist): it structurally prevents shipping anything unlisted, which is the
+# act-aa46c3 class (an internal docs/*.md that carries no denylisted token slips past
+# [8]/[9] but can never enter an allowlisted payload). The allowlist lives once in
+# lib-payload.sh, shared with the stage-payload producer so they can't drift.
+#
+# Two teeth + a surface:
+#   (a) COMPLETENESS (always on): every load-bearing file a tool ships (manifests,
+#       skills SKILL.md trees, .mcp.json, the binary launcher + per-arch binaries)
+#       must be INSIDE the allowlist — else the curated install would drop it. FAIL.
+#   (b) SUBSET (adopted tools): if the marketplace source already points at a curated
+#       dist/, its tree must be a subset of the allowlist — a stray file would ship. FAIL.
+#   (c) SURFACE: the excluded (dev/process) files are listed so nothing load-bearing is
+#       silently dropped, and an un-adopted tool is told its install still ships everything.
+EXTRA_PA="$PAYLOAD_ALLOW_EXTRA"; [ -n "$EXTRA_PA" ] || EXTRA_PA="${PLUGIN_KIT_PAYLOAD_ALLOW:-}"
+part=$(printf '%s\n' "$TRACKED" | payload_partition "$EXTRA_PA")
+pl_ship=$(printf '%s\n' "$part" | sed -n 's/^SHIP\t//p')
+pl_drop=$(printf '%s\n' "$part" | sed -n 's/^DROP\t//p')
+pl_nship=$(printf '%s\n' "$pl_ship" | grep -c . || true)
+pl_ndrop=$(printf '%s\n' "$pl_drop" | grep -c . || true)
+
+# Load-bearing set — DERIVED from the same signals the other checks use, never a
+# per-tool literal. Only files that are actually tracked are asserted.
+lb=""
+for m in .claude-plugin/marketplace.json .claude-plugin/plugin.json \
+         .codex-plugin/plugin.json .agents/plugins/marketplace.json .mcp.json; do
+  [ -f "$m" ] && lb="$lb$m"$'\n'
+done
+lb="$lb$(printf '%s\n' "$TRACKED" | grep -E '^skills/.*(^|/)SKILL\.md$' || true)"$'\n'
+# The file the Codex manifest points mcpServers at must itself ship.
+if [ -f .codex-plugin/plugin.json ]; then
+  cxptr=$(jget .codex-plugin/plugin.json mcpServers); cxfile=${cxptr#./}
+  [ "$cxptr" != "__MISS__" ] && [ -n "$cxfile" ] && [ -f "$cxfile" ] && lb="$lb$cxfile"$'\n'
+fi
+if [ "$IS_BINARY" = 1 ]; then
+  lb="$lb""bin/$TOOL"$'\n'
+  for a in $KIT_ARCHES; do lb="$lb""bin/$TOOL-${a%/*}-${a#*/}"$'\n'; done
+fi
+lb="$lb""README.md"$'\n'
+lic=$(printf '%s\n' "$TRACKED" | grep -E '^LICENSE' | head -1); [ -n "$lic" ] && lb="$lb$lic"$'\n'
+
+pl_missing=""
+while IFS= read -r lbf; do
+  [ -n "$lbf" ] || continue
+  printf '%s\n' "$TRACKED" | grep -qxF -- "$lbf" || continue    # assert only on tracked files
+  printf '%s\n' "$pl_ship" | grep -qxF -- "$lbf" || pl_missing="$pl_missing  $lbf"$'\n'
+done <<EOF
+$lb
+EOF
+
+if [ -n "$pl_missing" ]; then
+  fail "load-bearing files fall OUTSIDE the payload allowlist — a curated install would DROP them; widen lib-payload.sh (or --payload-allow):"
+  printf '%s' "$pl_missing" | sed 's/^/       /'
+else
+  pass "payload allowlist covers all load-bearing files ($pl_nship ship, $pl_ndrop excluded)"
+fi
+
+# (b) SUBSET teeth for a tool that has already adopted a curated-dist source.
+mp_srcpath=$(jget "$MP" plugins.0.source.path 2>/dev/null)
+mp_src=$(jget "$MP" plugins.0.source 2>/dev/null)
+case "$mp_srcpath" in
+  ./dist|./dist/*)
+    distroot=${mp_srcpath#./}
+    distfiles=$(printf '%s\n' "$TRACKED" | sed -n "s#^${distroot}/##p")
+    stray=$(printf '%s\n' "$distfiles" | payload_partition "$EXTRA_PA" | sed -n 's/^DROP\t//p')
+    if [ -n "$stray" ]; then
+      fail "curated dist ($distroot/) carries files OUTSIDE the payload allowlist — they would ship; rebuild with stage-payload:"
+      printf '%s\n' "$stray" | sed 's/^/         /'
+    else
+      pass "curated dist ($distroot/) payload is a subset of the allowlist"
+    fi ;;
+  *)
+    # Un-adopted: still ships the whole tree. Not a FAIL (adoption is per-tool and
+    # deliberate) — surface it so the gap is visible.
+    [ "$mp_src" = "./" ] && [ "$pl_ndrop" -gt 0 ] && \
+      info "marketplace source is still \"./\" — the install currently ships all $((pl_nship+pl_ndrop)) tracked files; adopt the curated dist source (stage-payload + source -> ./dist) to enforce the allowlist" ;;
+esac
+
+# (c) SURFACE the excluded set so nothing load-bearing hides among the exclusions.
+if [ "$pl_ndrop" -gt 0 ]; then
+  info "excluded from the payload ($pl_ndrop dev/process file(s) — not product):"
+  printf '%s\n' "$pl_drop" | sed 's/^/         /'
 fi
 fi
 

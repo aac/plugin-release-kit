@@ -13,6 +13,12 @@ It holds:
   launcher into its tracked `bin/`, version-stamped and darwin-signed. `/plugin
   install` (Claude and Codex) installs from the default branch, so the binary must
   be committed there. Run by the prepare-release workflow.
+- **`bin/stage-payload`** — curates the shipped plugin **payload** into a `dist/`
+  subtree, copying only the allowlisted tracked files (`bin/`, `skills/`, manifests,
+  `README`, `LICENSE`, ...) so the install ships a product, not the whole dev work tree.
+  Fail-closed: anything unlisted (internal docs, drafts, operator artifacts) is never
+  copied. The allowlist lives once in `bin/lib-payload.sh`, shared with `verify-release`
+  [16]. See the playbook's *Curated payload* section.
 - **`.github/workflows/release-plugin.yml`** — the reusable prepare-release
   pipeline (`workflow_dispatch`-triggered): bump version → build + stamp + sign →
   verify → **commit to the default branch**. Each tool's `release.yml` is a thin

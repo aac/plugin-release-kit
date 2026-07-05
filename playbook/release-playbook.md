@@ -109,6 +109,73 @@ MB across four arches), and each release re-commits them, so they accrue in git
 history. UPX/LFS optimization is a **deliberate deferred follow-up** — correctness
 (a working install) first.
 
+## Curated payload — ship a product, not the work tree
+
+A `"source": "./"` marketplace installs **every git-tracked file** of the repo — the
+whole dev work tree (`cmd/`, `internal/`, `.github/`, `Makefile`, `docs/`, `scripts/`,
+`AGENTS.md`, drafts, operator artifacts), not a curated product. That is a **hygiene**
+problem, not a size one:
+
+- **Allowlist beats denylist for leak containment.** The denylist (checks [8]/[9])
+  blocks *known-bad* terms; an allowlisted payload structurally prevents shipping
+  *anything unlisted*, including future internal artifacts the denylist has never heard
+  of. This is the act-aa46c3 class: an internal `docs/*.md` that carries no denylisted
+  token slips past [8]/[9] (check [14] only *WARNs* it) but can **never** enter an
+  allowlisted payload. Structural, not reactive.
+- **Smaller agent-readable surface.** These are agent-native tools; agents auto-read the
+  plugin dir — stray `scripts/`/`Makefile`/drafts are misread/execute risk.
+- **The install is the interface.** It should read as a product, not a checkout.
+
+**Mechanism — `stage-payload` → a curated `dist/`.** `bin/stage-payload` copies **only
+allowlisted tracked files**, preserving structure, into a `dist/` subtree; the
+marketplace source then points the install at that subtree
+(`{"source":"local","path":"./dist"}` or the `git-subdir` form) instead of `"./"`. It is
+the sibling of `stage-binaries`: `stage-binaries` produces the committed `bin/` (compiled
+artifacts), `stage-payload` produces the committed `dist/` (the shipped tree, which
+*includes* a copy of `bin/`). **Fail-closed by construction**: the default verdict for
+any path is *exclude*; only an explicit allowlist match ships. The allowlist lives once
+in `bin/lib-payload.sh`, shared with `verify-release` [16] so producer and verifier can't
+drift. [check 16]
+
+**The minimum allowlist** (`lib-payload.sh`): `bin/`, `skills/`, `.mcp.json`,
+`.claude-plugin/`, `.codex-plugin/`, `.agents/`, `README`, `LICENSE*`, `SECURITY.md`,
+`CHANGELOG.md`. A tool that genuinely ships a doc or asset in its install adds it with
+`--payload-allow "docs/spec.md,assets/*"` / `$PLUGIN_KIT_PAYLOAD_ALLOW` — the default
+stays minimal. Note `docs/spec.md` is check-[14]-*public* (may be committed) but not
+*product* (does not install) — the two allowlists are deliberately distinct.
+
+**`verify-release` [check 16]** enforces this without a native host `files` field:
+
+- **Completeness (always on).** Every load-bearing file a tool ships — manifests, every
+  `skills/**/SKILL.md`, `.mcp.json`, the Codex `mcpServers` pointer target, the `bin/`
+  launcher + per-arch binaries — must be *inside* the allowlist, else the curated install
+  would drop it. **FAIL.** The load-bearing set is derived from the same signals the other
+  checks use, never a per-tool literal.
+- **Subset (adopted tools).** Once the source points at `./dist`, that tree must be a
+  subset of the allowlist — a stray file would ship. **FAIL.** [check 1] accepts the
+  curated-dist object source shape so adoption isn't self-blocked.
+- **Surface.** The excluded (dev/process) files are listed so nothing load-bearing hides
+  among them; an un-adopted `"./"` tool gets an *info* line that its install still ships
+  the whole tree (never a WARN/FAIL — adoption is deliberate and per-tool, so the gate
+  never regresses a tool's verdict before it opts in).
+
+**Release-trigger model — by diff classification** (the Actions-quota-vs-freshness axis,
+decided rather than left to judgment): any change that **affects the binary** (`cmd/`,
+`internal/`, compiled packages, `go.mod`/`go.sum`, build flags/ldflags) goes through the
+full release build (cross-compile → stamp → sign → `bin/` → `dist/bin/`) — the
+minutes-expensive path, already `workflow_dispatch`-only. Changes that **don't** (skills,
+manifests, README, CHANGELOG) are a cheap copy and sync to `dist/` continuously. This
+keeps `dist/` binary freshness inheriting from `bin/` freshness (which the release build
+guarantees) while avoiding a full cross-compile on every skill/README edit. The
+skills-`go:embed` caveat is moot post-act-a3e279: the plugin reads `skills/<tool>/` from
+the shipped files directly (the embed's only consumer, install-skill, was removed), so a
+skill edit is not binary-affecting for plugin users.
+
+> **Adoption is per-tool** (flip the marketplace `source` to `./dist`, un-gitignore +
+> commit `dist/`, wire `stage-payload` into `release.yml`), and each adoption is proven
+> by a live `/plugin install` on **both** Claude Code and Codex before it lands. Until a
+> tool adopts, [check 16] runs in preview/info mode and changes nothing about its release.
+
 ## Manifests and versions
 
 - Both `.claude-plugin/plugin.json` and `.codex-plugin/plugin.json` are valid
