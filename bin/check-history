@@ -48,11 +48,20 @@ if [ -n "$phits" ]; then
   FOUND=1
 fi
 
-# Injected proper-noun denylist (exact strings via the -S pickaxe).
+# Injected proper-noun denylist. Match via the -G pickaxe (diff-text), NOT -S
+# (blob-content): -S counts occurrences in the raw blob, so under commit-to-main
+# it matches a denylist substring sitting incidentally inside a committed BINARY
+# (e.g. term "/wrap" inside the Go stdlib path "errors/wrap.go" in a binary's
+# symbol table), spuriously flagging every binary-bearing commit as leaked history.
+# -G operates on the textual diff, which is empty for binary files, so it skips
+# them while still catching every real text-file leak. -G takes a regex, so each
+# term is ERE-escaped to match literally (matches the path scan above, which is
+# also -G). See act-141300.
+esc_ere() { printf '%s' "$1" | sed 's/[.[\*^$(){}+?|\\]/\\&/g; s/]/\\]/g'; }
 if [ -n "$DL" ] && [ -f "$DL" ]; then
   while IFS= read -r t; do
     case "$t" in ''|\#*) continue ;; esac
-    h=$(git -C "$REPO" log --all --format='  %h %ad %s' --date=short -S "$t" 2>/dev/null | head -5)
+    h=$(git -C "$REPO" log --all --format='  %h %ad %s' --date=short -G "$(esc_ere "$t")" 2>/dev/null | head -5)
     if [ -n "$h" ]; then
       printf '%sLEAK%s denylisted term %s appears in history:\n' "$red" "$rst" "\"$t\""
       printf '%s\n' "$h"
