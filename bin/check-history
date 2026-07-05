@@ -30,6 +30,14 @@ done
 [ -n "$DL" ] || DL="${PLUGIN_KIT_DENYLIST:-}"
 [ -n "$DL" ] || DL="${XDG_CONFIG_HOME:-$HOME/.config}/plugin-release-kit/denylist"
 
+# Resolve $0 through symlinks so the sibling helper is found even when invoked
+# via a symlink on PATH, then source the shared word-boundary matcher so this
+# scan and verify-release [9] agree on semantics (act-5972d5).
+self="$0"; while [ -L "$self" ]; do l=$(readlink "$self"); case "$l" in /*) self="$l" ;; *) self="$(dirname "$self")/$l" ;; esac; done
+KITBIN=$(CDPATH= cd -- "$(dirname -- "$self")" && pwd)
+# shellcheck source=lib-denylist.sh
+. "$KITBIN/lib-denylist.sh"
+
 red=$'\033[31m'; grn=$'\033[32m'; ylw=$'\033[33m'; rst=$'\033[0m'
 [ -t 1 ] || { red=""; grn=""; ylw=""; rst=""; }
 
@@ -55,13 +63,14 @@ fi
 # path like "internal/foo/foo.go" in the binary's symbol table), spuriously
 # flagging every binary-bearing commit as leaked history. -G operates on the
 # textual diff, which is empty for binary files, so it skips them while still
-# catching every real text-file leak. -G takes a regex, so each term is ERE-escaped
-# to match literally (matches the path scan above, which is also -G).
-esc_ere() { printf '%s' "$1" | sed 's/[.[\*^$(){}+?|\\]/\\&/g; s/]/\\]/g'; }
+# catching every real text-file leak. -G takes a regex; dl_word_pattern (shared
+# lib) ERE-escapes each term AND anchors its alphanumeric edges to word
+# boundaries, so a token like "/qcm" no longer substring-matches "launcher/qcmd"
+# (act-5972d5).
 if [ -n "$DL" ] && [ -f "$DL" ]; then
   while IFS= read -r t; do
     case "$t" in ''|\#*) continue ;; esac
-    h=$(git -C "$REPO" log --all --format='  %h %ad %s' --date=short -G "$(esc_ere "$t")" 2>/dev/null | head -5)
+    h=$(git -C "$REPO" log --all --format='  %h %ad %s' --date=short -G "$(dl_word_pattern "$t")" 2>/dev/null | head -5)
     if [ -n "$h" ]; then
       printf '%sLEAK%s denylisted term %s appears in history:\n' "$red" "$rst" "\"$t\""
       printf '%s\n' "$h"

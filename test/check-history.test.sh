@@ -62,6 +62,26 @@ assert_rc 1 "literal 'a.b' leak is caught"
 # commit must be the reported hit.
 assert_out_has "literal a.b" "matched the literal-'a.b' commit (metachar escaped)"
 
+# --- act-5972d5: WORD-BOUNDARY matching in the text (-G) path ---
+# A short token must NOT substring-match a longer word (the token-as-substring-of-a-longer-word
+# false-positive), but a genuine word-bounded occurrence is still caught.
+WB="/qcm"                              # synthetic token; a substring of "/qcmd"
+DLWB="$WORK/dl-wb"; printf '%s\n' "$WB" > "$DLWB"
+# collision only: "launcher/qcmd" contains "/qcm" but the trailing 'm' abuts 'd'
+r=$(mkrepo wb-collision)
+printf '# needs the same launcher%sd list\n' "$WB" > "$r/lib.sh"   # -> launcher/qcmd
+git -C "$r" add -A && git -C "$r" commit -qm "arch-like collision"
+run "$CH" --repo "$r" --denylist "$DLWB"
+assert_rc 0 "word-boundary: token as a substring of a longer word is not a leak"
+assert_out_has "history is clean" "collision-only history reports clean"
+# a genuine word-bounded occurrence of the same token IS still caught
+r=$(mkrepo wb-real)
+printf 'run %s now\n' "$WB" > "$r/notes.md"
+git -C "$r" add -A && git -C "$r" commit -qm "real token"
+run "$CH" --repo "$r" --denylist "$DLWB"
+assert_rc 1 "word-boundary: a real word-bounded occurrence is still flagged"
+assert_out_has "appears in history" "names the word-bounded leak"
+
 # --- clean repo with a configured denylist exits 0 ---
 r=$(mkrepo clean)
 printf '# hello\n' > "$r/README.md"

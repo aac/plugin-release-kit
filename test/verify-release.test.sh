@@ -64,6 +64,27 @@ r=$(mkrepo_docs no-docs)
 run "$VR" --repo "$r" --denylist "$EMPTY_DL"
 assert_out_has "no tracked docs/*.md outside the allowlist" "no-docs repo passes [14]"
 
+# --- act-5972d5: [9] WORD-BOUNDARY denylist matching on tracked text files ---
+# A short token must NOT substring-match a longer word (the token-as-substring-of-a-longer-word
+# false-positive), but a genuine word-bounded occurrence is still flagged.
+WB="/qcm"                              # synthetic token; a substring of "/qcmd"
+DLWB="$WORK/dl-wb"; printf '%s\n' "$WB" > "$DLWB"
+# collision-only: file contains "launcher/qcmd" (token as substring, not bounded)
+r=$(mkrepo_docs wb-collision)
+printf '# needs the same launcher%sd list and %sd paths\n' "$WB" "$WB" > "$r/lib.sh"
+git -C "$r" add -A && git -C "$r" commit -qm collision >/dev/null
+run "$VR" --repo "$r" --denylist "$DLWB"
+assert_out_has "no denylisted proper nouns" "[9] passes: substring of a longer word not flagged"
+assert_out_lacks "leak denylisted terms" "[9] reports no leak for the collision"
+assert_rc 0 "collision-only repo passes verify-release"
+# a genuine word-bounded occurrence of the same token IS flagged by [9]
+r=$(mkrepo_docs wb-real)
+printf 'run %s now\n' "$WB" > "$r/notes.md"
+git -C "$r" add -A && git -C "$r" commit -qm real >/dev/null
+run "$VR" --repo "$r" --denylist "$DLWB"
+assert_out_has "leak denylisted terms" "[9] flags a genuine word-bounded token"
+assert_rc 1 "repo with a real word-bounded leak fails verify-release"
+
 # --- check [15] changelog guard (only fires for plugin repos) ---
 # A .claude-plugin/ dir makes IS_PLUGIN_REPO=1. Other plugin checks FAIL on this
 # skeletal repo, so we assert on [15]'s OUTPUT, not the overall exit code.

@@ -53,6 +53,10 @@ KITROOT=$(dirname "$KITBIN")
 # builds from, not a hardcoded copy.
 # shellcheck source=lib-binaries.sh
 . "$KITBIN/lib-binaries.sh"
+# Word-boundary denylist matching, shared with check-history so [9] and the
+# history scan agree on semantics (act-5972d5).
+# shellcheck source=lib-denylist.sh
+. "$KITBIN/lib-denylist.sh"
 cd "$REPO"
 
 FAILS=0 WARNS=0
@@ -322,12 +326,16 @@ if [ -n "$DL" ] && [ -f "$DL" ]; then
   dhits=""
   while IFS= read -r t; do
     [ -n "$t" ] || continue
+    # Word-boundary match (act-5972d5): a short token like "/qcm" must not
+    # substring-match "launcher/qcmd". LC_ALL=C so BSD grep's negated bracket
+    # class behaves under a UTF-8 login locale. -E for the ERE the helper builds.
+    pat=$(dl_word_pattern "$t")
     h=$(printf '%s\n' "$TRACKED" | while read -r f; do
       [ -f "$f" ] || continue
       # Skip files where personal names are legitimate (author attribution).
       [[ "$f" == LICENSE* ]] && continue
       [[ "$f" == *.claude-plugin/*.json || "$f" == *.codex-plugin/*.json ]] && continue
-      grep -Il -- "$t" "$f" 2>/dev/null && break
+      LC_ALL=C grep -IlE -- "$pat" "$f" 2>/dev/null && break
     done)
     [ -n "$h" ] && dhits="$dhits$t -> $(printf '%s' "$h" | tr '\n' ' ')"$'\n'
   done <<< "$terms"
