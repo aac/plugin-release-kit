@@ -189,6 +189,10 @@ The shipped surface must be generic and personal-context-free. Default to
 - `CLAUDE.md` is a thin pointer; build-side guidance ships as `AGENTS.md` (vendor
   -neutral — Codex and others read it; `CLAUDE.md` is Anthropic-specific); personal
   prefs/permissions stay in a gitignored `.claude/settings.local.json`. [check 12]
+- **A tool that creates working-tree state gitignores it in its own init** — its
+  dirs, lock files, generated artifacts, worktrees — so that state never leaks into
+  a contributor's `git add -A`. Full principle: the agent-manual ("Tools own their
+  gitignore footprint").
 
 ## Privacy model (for this kit and the tools it checks)
 
