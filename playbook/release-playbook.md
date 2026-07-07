@@ -261,6 +261,18 @@ The shipped surface must be generic and personal-context-free. Default to
   a contributor's `git add -A`. Full principle: the agent-manual ("Tools own their
   gitignore footprint").
 
+## No telemetry in a shipped tool
+
+A tool you ship must not phone home. Never wire analytics, install-count beacons,
+crash/error reporting, usage pings, or any "phone home" that emits usage data to an
+external service into a released tool. This is a standing constraint, not a per-release
+judgment — privacy and control, and a third-party send publishes the data (it may be
+cached or indexed even if later deleted). The corollary matters most at ship time: when
+a discovery, listing, or "get-discovered" path *depends* on emitting telemetry (a
+registry that only indexes repos carrying an install ping, an install-count badge), the
+path is **closed, not a tradeoff to weigh** — drop it, don't instrument for it. Mechanically
+checkable later: a verifier scan for analytics/beacon patterns is plausible.
+
 ## Privacy model (for this kit and the tools it checks)
 
 The verifier's logic is public and must contain **zero personal data**:
