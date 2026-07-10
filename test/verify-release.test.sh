@@ -111,3 +111,29 @@ assert_out_has "[Unreleased] section has content" "[15] passes a filled changelo
 r=$(mkrepo_plugin_cl plugin-no-cl '')
 run "$VR" --repo "$r" --denylist "$EMPTY_DL"
 assert_out_has "no CHANGELOG.md — changelog guard skipped" "[15] skips when no CHANGELOG"
+
+# --- act-4428ca: [5]/[6] find scans must not descend into gitignored .claude/ ---
+# A live agent-worktree drain leaves git worktrees under .claude/worktrees/<name>/, each
+# a full tracked checkout including skills/*/SKILL.md and any *.revised.md drafts. [6]
+# (single canonical skill tree) and [5] (pre-release drafts) must scope to the PARENT
+# repo's tracked surface — else they count the worktree copies and false-FAIL exactly
+# when a maintainer runs verify-release mid-drain. Regression guard: build a repo with
+# one canonical SKILL.md + a gitignored worktree copy (plus a draft in the worktree)
+# and assert [6] still sees exactly one tree and [5] finds no drafts.
+r=$(mkrepo wt-scan)
+git -C "$r" remote add origin https://github.com/example/thing.git
+printf '# thing\n' > "$r/README.md"
+mkdir -p "$r/skills/thing"
+printf -- '---\nname: thing\n---\n' > "$r/skills/thing/SKILL.md"
+printf '.claude/\n' > "$r/.gitignore"   # mirror real tool repos: .claude/ is gitignored
+git -C "$r" add -A && git -C "$r" commit -qm init >/dev/null
+# Simulate a live git worktree: an untracked full copy under .claude/worktrees/,
+# carrying its own SKILL.md and a scope-review draft.
+mkdir -p "$r/.claude/worktrees/act-demo/skills/thing"
+printf -- '---\nname: thing\n---\n' > "$r/.claude/worktrees/act-demo/skills/thing/SKILL.md"
+printf 'draft\n' > "$r/.claude/worktrees/act-demo/skills/thing/SKILL.revised.md"
+run "$VR" --repo "$r" --denylist "$EMPTY_DL"
+assert_out_has "one SKILL.md" "[6] counts only the canonical tracked SKILL.md, not worktree copies"
+assert_out_lacks "multiple SKILL.md trees" "[6] does not false-FAIL on a live .claude/worktrees/"
+assert_out_has "no .revised.md/.annotated.md drafts" "[5] ignores a draft inside a live worktree"
+assert_rc 0 "verify-release is clean with live .claude/worktrees/ present"

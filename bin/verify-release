@@ -178,12 +178,19 @@ else fail "tracked files still reference the retired 'agent-tools-release' distr
 fi  # end plugin-shape checks [1]-[4]
 
 echo "[5] pre-release drafts folded/removed"
-drafts=$(find . \( -path ./.git -o -path ./_kit \) -prune -o -type f \( -name '*.revised.md' -o -name '*.annotated.md' \) -print 2>/dev/null | sed 's|^\./||')
+# Scope to TRACKED files, not a raw filesystem find: only tracked files ship, and a
+# find over the working tree descends into gitignored cruft — notably live git
+# worktrees under .claude/worktrees/<name>/, each a full checkout whose own tracked
+# drafts would false-FAIL this against the PARENT repo (act-4428ca).
+drafts=$(printf '%s\n' "$TRACKED" | grep -E '\.(revised|annotated)\.md$' || true)
 if [ -z "$drafts" ]; then pass "no .revised.md/.annotated.md drafts left in tree"
 else fail "scope-review drafts still present (fold into canonical + delete before shipping):"; printf '%s\n' "$drafts" | sed 's/^/         /'; fi
 
 echo "[6] single canonical skill tree"
-skilltrees=$(find . \( -path ./.git -o -path ./_kit \) -prune -o -type f -name 'SKILL.md' -print 2>/dev/null | sed 's|^\./||')
+# Tracked-file scan (not a filesystem find) for the same reason as [5]: a live
+# .claude/worktrees/<name>/ copy of skills/*/SKILL.md is not source drift and must not
+# be counted (act-4428ca). Only tracked SKILL.md trees are the shipped skill source.
+skilltrees=$(printf '%s\n' "$TRACKED" | grep -E '(^|/)SKILL\.md$' || true)
 n=$(printf '%s\n' "$skilltrees" | grep -c .)
 if [ "$n" -le 1 ]; then pass "one SKILL.md (${skilltrees:-none})"
 else fail "multiple SKILL.md trees — duplicate skill source drifts:"; printf '%s\n' "$skilltrees" | sed 's/^/         /'; fi
