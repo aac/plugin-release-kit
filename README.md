@@ -38,6 +38,15 @@ bin/verify-release --repo <path-to-tool-repo>
 Exit 0 = release-ready; exit 1 = at least one FAIL. Run it during release prep
 and as a CI gate.
 
+**Opt-in doc-reconciliation advisory (check 17).** Off by default. When you point
+`--reconcile-cmd <cmd>` (or `$PLUGIN_KIT_RECONCILE_CMD`) at a command that reads a
+prompt on stdin and prints a verdict on stdout, the verifier asks it whether the
+docs (`--reconcile-docs`, default `README.md`) still match what the release
+shipped — but only when the release delta has user-facing commits (a docs/chore
+release makes no model call). The verdict is **advisory only**: it never counts as
+a WARN or FAIL and cannot gate CI, even under `--strict`. Unset ⇒ skipped. See the
+playbook's *Doc reconciliation* section.
+
 ### Privacy model
 
 The verifier is public and contains **no personal data**. Absolute personal

@@ -273,6 +273,40 @@ registry that only indexes repos carrying an install ping, an install-count badg
 path is **closed, not a tradeoff to weigh** — drop it, don't instrument for it. Mechanically
 checkable later: a verifier scan for analytics/beacon patterns is plausible.
 
+## Doc reconciliation — an opt-in advisory (check 17)
+
+A release ships code, but the docs describing it drift silently: a README keeps
+calling a now-shipped capability "planned", or a doc contradicts behaviour the
+release changed. This is a judgement no deterministic rule can make, so [check 17]
+is an **opt-in, advisory-only** step that asks a model whether the configured docs
+still match what the release shipped.
+
+- **Off by default.** It runs only when a reconcile command is configured, via
+  `--reconcile-cmd <cmd>` or `$PLUGIN_KIT_RECONCILE_CMD` — a command that reads a
+  prompt on stdin and prints a verdict on stdout. Unset ⇒ the check prints a skip
+  notice and does nothing (graceful degrade — a bare CI runner or a public adopter
+  who never opts in sees exactly the same skip as the no-denylist path in check 9).
+  So it changes **zero** current verdicts until a tool opts in.
+- **Advisory only — it never gates.** The verdict is surfaced on an `ADVISORY`
+  line that counts as **neither a WARN nor a FAIL**. A nondeterministic model
+  verdict must never be able to fail CI, so this holds **even under `--strict`**
+  (where every WARN becomes a failure). The advisory informs the human; it never
+  blocks the release.
+- **Deterministic trigger — bounded cost.** The model is invoked **only** when the
+  release delta actually contains user-facing (feature-ish) commits. The check
+  reuses `check-changelog --draft`'s delta seam (the commit range since the last
+  `release ...` commit) and treats its "no user-facing commits in range" sentinel
+  as "nothing shipped worth reconciling" ⇒ skip, **no model call**. A docs-only or
+  chore release costs nothing.
+- **What it feeds the model.** The changelog delta (the `--draft` body plus the
+  `CHANGELOG.md` `[Unreleased]` section) and the contents of the configured doc set
+  (`--reconcile-docs` / `$PLUGIN_KIT_RECONCILE_DOCS`, default `README.md`), asking
+  whether anything in the docs now contradicts what shipped or still describes as
+  future/planned something that now exists.
+- **Errors degrade, never fail.** If the reconcile command exits non-zero or emits
+  no verdict, the check prints an `info` notice and moves on — a broken or missing
+  model integration never fails a release.
+
 ## Privacy model (for this kit and the tools it checks)
 
 The verifier's logic is public and must contain **zero personal data**:
