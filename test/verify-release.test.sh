@@ -137,3 +137,68 @@ assert_out_has "one SKILL.md" "[6] counts only the canonical tracked SKILL.md, n
 assert_out_lacks "multiple SKILL.md trees" "[6] does not false-FAIL on a live .claude/worktrees/"
 assert_out_has "no .revised.md/.annotated.md drafts" "[5] ignores a draft inside a live worktree"
 assert_rc 0 "verify-release is clean with live .claude/worktrees/ present"
+
+# --- act-834d34: [17] opt-in doc-reconciliation ADVISORY ---
+# These assert on the EXIT CODE (especially under --strict), so the fixture must be
+# a FULLY GREEN skill-only plugin repo (0 FAIL) — else an unrelated FAIL would set
+# exit 1 and mask what [17] does. A baseline 'release ...' commit fixes the delta
+# origin (check-changelog --draft ranges since it), so each scenario controls its
+# own delta with --allow-empty commits. The reconcile command is a canned STUB
+# written into the test's temp fixture — NO real model call, fully hermetic.
+mkrepo_green_plugin() {
+  local name=$1 ver=${2:-0.1.0}
+  local r; r=$(mkrepo "$name")
+  git -C "$r" remote add origin https://github.com/example/thing.git
+  mkdir -p "$r/.claude-plugin" "$r/.codex-plugin" "$r/.agents/plugins" "$r/skills/thing"
+  printf -- '---\nname: thing\ndescription: A synthetic test skill for the kit fixture.\nmetadata:\n  version: %s\n---\n# thing\n' "$ver" > "$r/skills/thing/SKILL.md"
+  printf '{"name":"thing","version":"%s"}\n' "$ver" > "$r/.claude-plugin/plugin.json"
+  printf '{"name":"thing","version":"%s","skills":"./skills/"}\n' "$ver" > "$r/.codex-plugin/plugin.json"
+  printf '{"plugins":[{"name":"thing","source":"./","version":"%s"}]}\n' "$ver" > "$r/.claude-plugin/marketplace.json"
+  printf '{"plugins":[{"name":"thing","source":{"source":"url","url":"https://github.com/example/thing.git"},"policy":{"installation":"AVAILABLE","authentication":"ON_USE"},"category":"tools"}]}\n' > "$r/.agents/plugins/marketplace.json"
+  printf '# thing\n\n    /plugin marketplace add example/thing\n    /plugin install thing@thing\n' > "$r/README.md"
+  git -C "$r" add -A && git -C "$r" commit -qm "release thing v$ver" >/dev/null
+  printf '%s' "$r"
+}
+
+# (1) reconcile cmd set + a feature delta + a stub that emits a contradiction =>
+# the advisory surfaces the contradiction AND exit 0 EVEN UNDER --strict.
+# STRICT-EXEMPTION REGRESSION GUARD: this must go RED if advise() in check [17]
+# were swapped for warn() — the WARN would gate under --strict and flip this to
+# exit 1. (Verified by hand during development by making exactly that swap:
+# `warn` yields "1 WARN (strict) — not release-ready", exit 1.)
+r=$(mkrepo_green_plugin r17-contra)
+git -C "$r" commit -q --allow-empty -m "feat: add feature Q" >/dev/null
+STUB="$WORK/reconcile-contra.sh"
+printf '#!/bin/sh\ncat >/dev/null\necho "DOC-CONTRADICTION-TOKEN: README calls feature Q planned but the delta shows it shipped."\n' > "$STUB"
+chmod +x "$STUB"
+run env PLUGIN_KIT_RECONCILE_CMD="$STUB" "$VR" --repo "$r" --denylist "$EMPTY_DL" --strict
+assert_out_has "[17] docs reconciled against the shipped delta" "[17] runs for a plugin repo with a reconcile cmd"
+assert_out_has "DOC-CONTRADICTION-TOKEN" "[17] surfaces the model's contradiction verdict"
+assert_out_has "ADVISORY" "[17] verdict is a prominent ADVISORY line"
+assert_rc 0 "[17] advisory never gates — exit 0 even under --strict (strict-exemption guard)"
+
+# (2) reconcile cmd UNSET => a skip notice appears and nothing gates (rc 0), even
+# with a feature delta present.
+r=$(mkrepo_green_plugin r17-unset)
+git -C "$r" commit -q --allow-empty -m "feat: add feature Q" >/dev/null
+run "$VR" --repo "$r" --denylist "$EMPTY_DL" --strict
+assert_out_has "doc-reconciliation advisory skipped" "[17] skips when no reconcile command is configured"
+assert_rc 0 "[17] unset reconcile command does not gate (exit 0 under --strict)"
+
+# (3) reconcile cmd SET but the delta has NO feature-ish commits => the stub would
+# write a sentinel file IFF invoked; its ABSENCE proves the deterministic trigger
+# skipped the model call (bounded cost — a docs/chore release makes no model call).
+r=$(mkrepo_green_plugin r17-nofeat)
+git -C "$r" commit -q --allow-empty -m "chore: tidy build" >/dev/null
+git -C "$r" commit -q --allow-empty -m "docs: reword readme" >/dev/null
+SENT="$WORK/r17-model-was-called"
+rm -f "$SENT"
+STUB3="$WORK/reconcile-sentinel.sh"
+printf '#!/bin/sh\ncat >/dev/null\necho called > "%s"\necho verdict\n' "$SENT" > "$STUB3"
+chmod +x "$STUB3"
+run env PLUGIN_KIT_RECONCILE_CMD="$STUB3" "$VR" --repo "$r" --denylist "$EMPTY_DL"
+assert_out_has "no user-facing commits" "[17] recognizes a chore/docs-only delta as nothing-to-reconcile"
+[ ! -f "$SENT" ] \
+  && ok "[17] no model call on a non-feature delta (sentinel absent)" \
+  || bad "[17] no model call on a non-feature delta (sentinel absent)" "sentinel exists — the trigger called the model on a non-feature delta"
+assert_rc 0 "[17] non-feature-delta path exits 0"
