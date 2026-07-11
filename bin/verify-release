@@ -8,7 +8,8 @@
 # and as a CI gate.
 #
 #   verify-release [--repo <path>] [--denylist <file>] [--docs-allow <list>]
-#                  [--payload-allow <list>] [--strict]
+#                  [--payload-allow <list>] [--reconcile-cmd <cmd>]
+#                  [--reconcile-docs <list>] [--strict]
 #
 #   --repo          target repo (default: cwd)
 #   --denylist      newline-separated proper-noun denylist file (names, handles,
@@ -20,6 +21,15 @@
 #   --payload-allow comma/newline-separated EXTRA payload allowlist patterns added to
 #                   the minimum default (bin/, skills/, manifests, README, LICENSE,
 #                   ...). Overrides $PLUGIN_KIT_PAYLOAD_ALLOW. Used by check [16].
+#   --reconcile-cmd OPT-IN doc-reconciliation advisory (check [17]). A command that
+#                   reads a prompt on stdin and prints a verdict on stdout; used to ask
+#                   a model whether the docs still match what the release shipped.
+#                   Overrides $PLUGIN_KIT_RECONCILE_CMD. UNSET/empty => check skipped
+#                   (graceful degrade — bare CI/public adopters just see a skip). The
+#                   advisory is ADVISORY-only: it never counts as a WARN or FAIL, so a
+#                   nondeterministic model verdict can never gate CI, even under --strict.
+#   --reconcile-docs comma/newline-separated doc set fed to the reconcile command
+#                   (default: README.md). Overrides $PLUGIN_KIT_RECONCILE_DOCS.
 #   --strict        treat WARN as failure too (exit 1 on any WARN)
 #
 # PRIVACY MODEL — this script is public; it must contain zero personal data.
@@ -34,14 +44,17 @@
 set -uo pipefail
 
 REPO="" DENYLIST_FILE="" DOCS_ALLOW="" PAYLOAD_ALLOW_EXTRA="" STRICT=0
+RECONCILE_CMD="" RECONCILE_DOCS=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo) REPO=$2; shift 2 ;;
     --denylist) DENYLIST_FILE=$2; shift 2 ;;
     --docs-allow) DOCS_ALLOW=$2; shift 2 ;;
     --payload-allow) PAYLOAD_ALLOW_EXTRA=$2; shift 2 ;;
+    --reconcile-cmd) RECONCILE_CMD=$2; shift 2 ;;
+    --reconcile-docs) RECONCILE_DOCS=$2; shift 2 ;;
     --strict) STRICT=1; shift ;;
-    -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,38p' "$0"; exit 0 ;;
     *) echo "verify-release: unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -69,12 +82,16 @@ KITROOT=$(dirname "$KITBIN")
 cd "$REPO"
 
 FAILS=0 WARNS=0
-red=$'\033[31m'; grn=$'\033[32m'; ylw=$'\033[33m'; dim=$'\033[2m'; rst=$'\033[0m'
-[ -t 1 ] || { red=""; grn=""; ylw=""; dim=""; rst=""; }
+red=$'\033[31m'; grn=$'\033[32m'; ylw=$'\033[33m'; cyn=$'\033[36m'; bld=$'\033[1m'; dim=$'\033[2m'; rst=$'\033[0m'
+[ -t 1 ] || { red=""; grn=""; ylw=""; cyn=""; bld=""; dim=""; rst=""; }
 pass() { printf '  %sPASS%s %s\n' "$grn" "$rst" "$1"; }
 fail() { printf '  %sFAIL%s %s\n' "$red" "$rst" "$1"; FAILS=$((FAILS+1)); }
 warn() { printf '  %sWARN%s %s\n' "$ylw" "$rst" "$1"; WARNS=$((WARNS+1)); }
 info() { printf '       %s%s%s\n' "$dim" "$1" "$rst"; }
+# advise() is a prominent, NON-dim advisory line that increments NEITHER FAILS
+# NOR WARNS. That is load-bearing: it structurally exempts the advisory from
+# --strict, so a nondeterministic model verdict (check [17]) can never gate CI.
+advise() { printf '  %s%sADVISORY%s %s\n' "$bld" "$cyn" "$rst" "$1"; }
 
 # JSON helper (python3 — no jq dependency).
 jget() { python3 -c "import json,sys
@@ -602,6 +619,65 @@ esac
 if [ "$pl_ndrop" -gt 0 ]; then
   info "excluded from the payload ($pl_ndrop dev/process file(s) — not product):"
   printf '%s\n' "$pl_drop" | sed 's/^/         /'
+fi
+fi
+
+if [ "$IS_PLUGIN_REPO" = 1 ]; then
+echo "[17] docs reconciled against the shipped delta (opt-in advisory)"
+# ADVISORY-ONLY, OFF BY DEFAULT. Asks a model whether the configured docs now
+# contradict what the release shipped (or still describe as future/planned
+# something that now exists). The verdict is surfaced via advise() — it counts as
+# NEITHER a WARN NOR a FAIL, so a nondeterministic model can never gate CI, even
+# under --strict. Unset command => skip (graceful degrade, like the no-denylist
+# path in [9]); a docs-only/chore release makes NO model call (bounded cost).
+RCMD="$RECONCILE_CMD"; [ -n "$RCMD" ] || RCMD="${PLUGIN_KIT_RECONCILE_CMD:-}"
+if [ -z "$RCMD" ]; then
+  info "no reconcile command configured (--reconcile-cmd or \$PLUGIN_KIT_RECONCILE_CMD) — doc-reconciliation advisory skipped"
+else
+  RDOCS="$RECONCILE_DOCS"; [ -n "$RDOCS" ] || RDOCS="${PLUGIN_KIT_RECONCILE_DOCS:-}"
+  [ -n "$RDOCS" ] || RDOCS="README.md"
+  # DETERMINISTIC TRIGGER: only call the model when the release delta actually
+  # contains feature-ish commits. Reuse check-changelog --draft's delta seam
+  # (range since the last 'release ...' commit) and treat its "no user-facing
+  # commits" sentinel as "nothing shipped worth reconciling" => skip, no model call.
+  draft=$("$KITBIN/check-changelog" --draft --repo "$REPO" 2>/dev/null)
+  case "$draft" in
+    *"_No user-facing commits in range"*)
+      info "release delta has no user-facing commits — nothing to reconcile (no model call)" ;;
+    *)
+      # Assemble the prompt: the changelog delta (draft body + the CHANGELOG
+      # [Unreleased] section body) plus the contents of the configured doc set.
+      unrel=""
+      [ -f CHANGELOG.md ] && unrel=$(awk 'BEGIN{p=0} /^## /{if(p){exit}} /^##[[:space:]]*\[[Uu]nreleased\]/{p=1} p' CHANGELOG.md)
+      docs_list=$(printf '%s' "$RDOCS" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$' || true)
+      prompt=$({
+        printf 'You are reviewing a software release for DOCUMENTATION DRIFT.\n\n'
+        printf '=== CHANGELOG DELTA (what this release shipped) ===\n%s\n\n' "$draft"
+        [ -n "$unrel" ] && printf '=== CHANGELOG [Unreleased] ===\n%s\n\n' "$unrel"
+        while IFS= read -r doc; do
+          [ -n "$doc" ] || continue
+          [ -f "$doc" ] || continue
+          printf '=== DOC: %s ===\n' "$doc"
+          cat -- "$doc"
+          printf '\n\n'
+        done <<EOF
+$docs_list
+EOF
+        printf '=== QUESTION ===\n'
+        printf 'Does anything in the docs above now CONTRADICT what shipped, or describe as\n'
+        printf 'future/planned something that now EXISTS? Answer briefly. If nothing is out of\n'
+        printf 'sync, say so in one line.\n'
+      })
+      verdict=$(printf '%s' "$prompt" | eval "$RCMD" 2>/dev/null); rrc=$?
+      if [ "$rrc" -ne 0 ]; then
+        info "reconcile command exited $rrc — advisory skipped (a reconcile error never fails the release)"
+      elif [ -z "$(printf '%s' "$verdict" | tr -d '[:space:]')" ]; then
+        info "reconcile command produced no verdict — advisory skipped"
+      else
+        advise "documentation reconciliation (model verdict — advisory only, never gates):"
+        printf '%s\n' "$verdict" | sed 's/^/         /'
+      fi ;;
+  esac
 fi
 fi
 
