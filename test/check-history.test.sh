@@ -88,3 +88,20 @@ printf '# hello\n' > "$r/README.md"
 git -C "$r" add -A && git -C "$r" commit -qm "clean"
 run "$CH" --repo "$r" --denylist "$DL"
 assert_rc 0 "clean repo passes"
+
+# --- author attribution in LICENSE is exempt, as in verify-release [8]/[9] ---
+# A LICENSE naming its author must not fail history; the same term anywhere else
+# in history still must.
+NAME="Qzauthor"                         # synthetic stand-in for a maintainer name
+DLN="$WORK/dl-name"; printf '%s\n' "$NAME" > "$DLN"
+r=$(mkrepo license-name)
+printf 'MIT License\n\nCopyright (c) 2026 %s\n' "$NAME" > "$r/LICENSE"
+git -C "$r" add -A && git -C "$r" commit -qm "add license"
+run "$CH" --repo "$r" --denylist "$DLN"
+assert_rc 0 "author name in LICENSE is not a history leak"
+assert_out_has "history is clean" "LICENSE-only history reports clean"
+printf 'ask %s first\n' "$NAME" > "$r/notes.md"
+git -C "$r" add -A && git -C "$r" commit -qm "name outside license"
+run "$CH" --repo "$r" --denylist "$DLN"
+assert_rc 1 "the same name outside LICENSE is still flagged"
+assert_out_has "name outside license" "reports the non-LICENSE commit"

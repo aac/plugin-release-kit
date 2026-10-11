@@ -46,10 +46,17 @@ printf '== check-history: %s ==  (%s commits)\n' "$REPO" "$ncommits"
 
 FOUND=0
 
+# Files where a personal name is legitimate (author attribution), exempted exactly
+# as verify-release [8]/[9] exempt them: LICENSE* everywhere, plugin manifests for
+# the proper-noun scan. Without this, a LICENSE naming its author fails history on
+# the very line the playbook calls fine.
+EXEMPT_PATHS=(':(exclude)LICENSE*')
+EXEMPT_NOUNS=(':(exclude)LICENSE*' ':(exclude,glob)**/.claude-plugin/*.json' ':(exclude,glob)**/.codex-plugin/*.json')
+
 # Generic absolute home paths — never legitimate anywhere in history.
 ppat='/Users/[A-Za-z0-9._-]+|/home/[A-Za-z0-9._-]+'
 # Pickaxe over diffs: commits whose diff added/removed a matching line.
-phits=$(git -C "$REPO" log --all --format='  %h %ad %s' --date=short -G "$ppat" 2>/dev/null | head -20)
+phits=$(git -C "$REPO" log --all --format='  %h %ad %s' --date=short -G "$ppat" -- . "${EXEMPT_PATHS[@]}" 2>/dev/null | head -20)
 if [ -n "$phits" ]; then
   printf '%sLEAK%s personal/home paths appear in history (commits that touched them):\n' "$red" "$rst"
   printf '%s\n' "$phits"
@@ -70,7 +77,7 @@ fi
 if [ -n "$DL" ] && [ -f "$DL" ]; then
   while IFS= read -r t; do
     case "$t" in ''|\#*) continue ;; esac
-    h=$(git -C "$REPO" log --all --format='  %h %ad %s' --date=short -G "$(dl_word_pattern "$t")" 2>/dev/null | head -5)
+    h=$(git -C "$REPO" log --all --format='  %h %ad %s' --date=short -G "$(dl_word_pattern "$t")" -- . "${EXEMPT_NOUNS[@]}" 2>/dev/null | head -5)
     if [ -n "$h" ]; then
       printf '%sLEAK%s denylisted term %s appears in history:\n' "$red" "$rst" "\"$t\""
       printf '%s\n' "$h"
