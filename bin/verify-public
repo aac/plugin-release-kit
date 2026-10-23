@@ -68,7 +68,7 @@ if [ "$hrc" = 0 ]; then
     *) pass "history is clean ($(git rev-list --all --count 2>/dev/null) commits)" ;;
   esac
 else
-  fail "history carries leaks — repave before going public (see the playbook's App repos section):"
+  fail "history carries leaks — a real leak needs a repave before going public; synthetic demo data needs a .privacy-fixtures entry instead (playbook: App repos):"
   printf '%s\n' "$hout" | grep -vE '^(== check-history|$|history carries leaks)' | sed 's/^/       /'
 fi
 
