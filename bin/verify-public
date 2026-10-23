@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# verify-public — privacy-only gate for ANY repo about to be (or already) public:
+# an app, a library, a site, a plugin. No manifest, MCP or version checks.
+#
+#   verify-public [--repo <path>] [--denylist <file>] [--strict]
+#
+#   --repo      target repo (default: cwd); needs a working tree
+#   --denylist  newline-separated denylist file. Overrides $PLUGIN_KIT_DENYLIST;
+#               default ${XDG_CONFIG_HOME:-~/.config}/plugin-release-kit/denylist.
+#               Every file in <denylist>.d/ is read too (generated term lists).
+#   --strict    treat WARN as failure too (exit 1 on any WARN)
+#
+# Checks, in order:
+#   [8] tracked files: no absolute home paths, no card/account-number fragments
+#   [9] tracked files: no denylisted terms
+#   [H] full git history: check-history (the same three patterns, every commit)
+# [8]/[9] are the exact checks verify-release runs — both call lib-privacy.sh.
+#
+# Exit contract (same as verify-release): 0 = no FAIL (WARNs allowed unless
+# --strict); 1 = at least one FAIL (or a WARN under --strict); 2 = usage error.
+set -uo pipefail
+
+REPO="" DENYLIST_FILE="" STRICT=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo) REPO=${2:-}; shift 2 || { echo "verify-public: --repo needs a path" >&2; exit 2; } ;;
+    --denylist) DENYLIST_FILE=${2:-}; shift 2 || { echo "verify-public: --denylist needs a file" >&2; exit 2; } ;;
+    --strict) STRICT=1; shift ;;
+    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    *) echo "verify-public: unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+[ -n "$REPO" ] || REPO=$(pwd)
+REPO=$(CDPATH= cd -- "$REPO" 2>/dev/null && pwd) || { echo "verify-public: bad --repo" >&2; exit 2; }
+[ -e "$REPO/.git" ] || { echo "verify-public: not a git working tree: $REPO (clone a bare repo first)" >&2; exit 2; }
+
+self="$0"; while [ -L "$self" ]; do t=$(readlink "$self"); case "$t" in /*) self="$t" ;; *) self="$(dirname "$self")/$t" ;; esac; done
+KITBIN=$(CDPATH= cd -- "$(dirname -- "$self")" && pwd)
+# shellcheck source=lib-privacy.sh
+. "$KITBIN/lib-privacy.sh"
+DL=$(priv_resolve_denylist "$DENYLIST_FILE")
+case "$DL" in /*) ;; *) DL="$PWD/$DL" ;; esac   # relative to where you ran it, not the repo
+cd "$REPO" || exit 2
+
+FAILS=0 WARNS=0
+red=$'\033[31m'; grn=$'\033[32m'; ylw=$'\033[33m'; rst=$'\033[0m'
+[ -t 1 ] || { red=""; grn=""; ylw=""; rst=""; }
+pass() { printf '  %sPASS%s %s\n' "$grn" "$rst" "$1"; }
+fail() { printf '  %sFAIL%s %s\n' "$red" "$rst" "$1"; FAILS=$((FAILS+1)); }
+warn() { printf '  %sWARN%s %s\n' "$ylw" "$rst" "$1"; WARNS=$((WARNS+1)); }
+
+printf '== verify-public: %s ==\n' "$REPO"
+TRACKED=$(git ls-files)
+
+echo "[8] no personal paths or card/account fragments in tracked files"
+priv_check_paths "$TRACKED"
+priv_check_cards "$TRACKED"
+
+echo "[9] no proper-noun leaks (injected denylist)"
+priv_check_denylist "$TRACKED" "$DL"
+
+echo "[H] full git history (check-history)"
+# Pass the resolved denylist explicitly so both halves read the same terms.
+hout=$("$KITBIN/check-history" --repo "$REPO" --denylist "$DL" 2>&1); hrc=$?
+if [ "$hrc" = 0 ]; then
+  case "$hout" in
+    *WARN*) warn "history clean of paths and card fragments, but the denylist scan was skipped (no denylist)" ;;
+    *) pass "history is clean ($(git rev-list --all --count 2>/dev/null) commits)" ;;
+  esac
+else
+  fail "history carries leaks — repave before going public (see the playbook's App repos section):"
+  printf '%s\n' "$hout" | grep -vE '^(== check-history|$|history carries leaks)' | sed 's/^/       /'
+fi
+
+echo
+if [ "$FAILS" -gt 0 ]; then
+  printf '%s%d FAIL%s, %d WARN — not safe to make public\n' "$red" "$FAILS" "$rst" "$WARNS"
+  exit 1
+elif [ "$WARNS" -gt 0 ] && [ "$STRICT" = 1 ]; then
+  printf '%s%d WARN%s (strict) — not safe to make public\n' "$ylw" "$WARNS" "$rst"
+  exit 1
+elif [ "$WARNS" -gt 0 ]; then
+  printf '%s0 FAIL, %d WARN%s — privacy checks pass (review warnings)\n' "$grn" "$WARNS" "$rst"
+  exit 0
+else
+  printf '%sall privacy checks pass%s\n' "$grn" "$rst"
+  exit 0
+fi

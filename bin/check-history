@@ -10,8 +10,10 @@
 #   exit 0  => history is clean; no repave needed.
 #   exit 1  => history carries leaks; repave (squash from a clean snapshot) first.
 #
-# Same privacy model as verify-release: generic path patterns are built in;
-# proper nouns come from an injected denylist, never hardcoded.
+# Same privacy model as verify-release: generic patterns (home paths, card and
+# account-number fragments) are built in; proper nouns come from an injected
+# denylist (plus its <denylist>.d/ directory), never hardcoded. Patterns and
+# denylist resolution are shared with verify-release via lib-privacy.sh.
 #
 #   check-history [--repo <path>] [--denylist <file>]
 set -uo pipefail
@@ -27,16 +29,15 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$REPO" ] || REPO=$(pwd)
 [ -e "$REPO/.git" ] || { echo "check-history: not a git repo: $REPO" >&2; exit 2; }
-[ -n "$DL" ] || DL="${PLUGIN_KIT_DENYLIST:-}"
-[ -n "$DL" ] || DL="${XDG_CONFIG_HOME:-$HOME/.config}/plugin-release-kit/denylist"
 
 # Resolve $0 through symlinks so the sibling helper is found even when invoked
 # via a symlink on PATH, then source the shared word-boundary matcher so this
-# scan and verify-release [9] agree on semantics (act-5972d5).
+# scan and verify-release [8]/[9] agree on patterns and semantics (act-5972d5).
 self="$0"; while [ -L "$self" ]; do l=$(readlink "$self"); case "$l" in /*) self="$l" ;; *) self="$(dirname "$self")/$l" ;; esac; done
 KITBIN=$(CDPATH= cd -- "$(dirname -- "$self")" && pwd)
-# shellcheck source=lib-denylist.sh
-. "$KITBIN/lib-denylist.sh"
+# shellcheck source=lib-privacy.sh
+. "$KITBIN/lib-privacy.sh"
+DL=$(priv_resolve_denylist "$DL")
 
 red=$'\033[31m'; grn=$'\033[32m'; ylw=$'\033[33m'; rst=$'\033[0m'
 [ -t 1 ] || { red=""; grn=""; ylw=""; rst=""; }
@@ -54,12 +55,26 @@ EXEMPT_PATHS=(':(exclude)LICENSE*')
 EXEMPT_NOUNS=(':(exclude)LICENSE*' ':(exclude,glob)**/.claude-plugin/*.json' ':(exclude,glob)**/.codex-plugin/*.json')
 
 # Generic absolute home paths — never legitimate anywhere in history.
-ppat='/Users/[A-Za-z0-9._-]+|/home/[A-Za-z0-9._-]+'
 # Pickaxe over diffs: commits whose diff added/removed a matching line.
-phits=$(git -C "$REPO" log --all --format='  %h %ad %s' --date=short -G "$ppat" -- . "${EXEMPT_PATHS[@]}" 2>/dev/null | head -20)
+phits=$(git -C "$REPO" log --all --format='  %h %ad %s' --date=short -G "$PRIV_PATH_ERE" -- . "${EXEMPT_PATHS[@]}" 2>/dev/null | head -20)
 if [ -n "$phits" ]; then
   printf '%sLEAK%s personal/home paths appear in history (commits that touched them):\n' "$red" "$rst"
   printf '%s\n' "$phits"
+  FOUND=1
+fi
+
+# Card and account-number fragments (the generic pattern in lib-privacy.sh), so
+# a card tail nobody thought to denylist is still caught. Files the repo declares
+# synthetic in .privacy-fixtures (read from the working tree) are skipped for
+# this pattern only, exactly as in the working-tree check.
+EXEMPT_CARDS=("${EXEMPT_PATHS[@]}")
+while IFS= read -r g; do [ -n "$g" ] && EXEMPT_CARDS+=(":(exclude,glob)$g"); done <<EOF
+$(priv_fixture_globs "$REPO")
+EOF
+chits=$(git -C "$REPO" log --all --format='  %h %ad %s' --date=short -G "$PRIV_CARD_ERE" -- . "${EXEMPT_CARDS[@]}" 2>/dev/null | head -20)
+if [ -n "$chits" ]; then
+  printf '%sLEAK%s card/account-number fragments appear in history (commits that touched them):\n' "$red" "$rst"
+  printf '%s\n' "$chits"
   FOUND=1
 fi
 
@@ -74,18 +89,20 @@ fi
 # lib) ERE-escapes each term AND anchors its alphanumeric edges to word
 # boundaries, so a token like "/qcm" no longer substring-matches "launcher/qcmd"
 # (act-5972d5).
-if [ -n "$DL" ] && [ -f "$DL" ]; then
+if [ -n "$(priv_denylist_sources "$DL")" ]; then
   while IFS= read -r t; do
-    case "$t" in ''|\#*) continue ;; esac
+    [ -n "$t" ] || continue
     h=$(git -C "$REPO" log --all --format='  %h %ad %s' --date=short -G "$(dl_word_pattern "$t")" -- . "${EXEMPT_NOUNS[@]}" 2>/dev/null | head -5)
     if [ -n "$h" ]; then
       printf '%sLEAK%s denylisted term %s appears in history:\n' "$red" "$rst" "\"$t\""
       printf '%s\n' "$h"
       FOUND=1
     fi
-  done < "$DL"
+  done <<EOF
+$(priv_denylist_terms "$DL")
+EOF
 else
-  printf '%sWARN%s no denylist (--denylist or $PLUGIN_KIT_DENYLIST) — proper-noun history scan skipped\n' "$ylw" "$rst"
+  printf '%sWARN%s no denylist (--denylist, $PLUGIN_KIT_DENYLIST, or %s[.d/]) — proper-noun history scan skipped\n' "$ylw" "$rst" "$DL"
 fi
 
 echo

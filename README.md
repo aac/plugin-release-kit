@@ -24,6 +24,10 @@ It holds:
   verify → **commit to the default branch**. Each tool's `release.yml` is a thin
   caller. No tags, no GitHub Releases, no tarballs.
 
+- **`bin/verify-public`** — the privacy-only gate for any repo going public, plugin
+  or not (an app, a site, a library): the same working-tree privacy checks as
+  `verify-release` plus `check-history`, with no manifest, MCP or version checks.
+
 (Plus `bin/lib-binaries.sh` — the single definition of the arch list + launcher
 shared by `stage-binaries` and `verify-release` — and version helpers.)
 
@@ -47,10 +51,23 @@ release makes no model call). The verdict is **advisory only**: it never counts 
 a WARN or FAIL and cannot gate CI, even under `--strict`. Unset ⇒ skipped. See the
 playbook's *Doc reconciliation* section.
 
+## Verify any repo before it goes public
+
+```sh
+bin/verify-public --repo <path-to-any-repo> [--denylist <file>] [--strict]
+```
+
+Runs [8] home paths and card/account-number fragments, [9] the denylist, and the
+full-history scan. Same exit contract as `verify-release`. See the playbook's
+*App repos (not plugins)* section for when to run it and the repave order.
+
 ### Privacy model
 
 The verifier is public and contains **no personal data**. Absolute personal
-paths (`/Users/<x>`, `/home/<x>`) are caught by generic patterns. Personal proper
+paths (`/Users/<x>`, `/home/<x>`) are caught by generic patterns. Card and
+account-number fragments ("card ending in NNNN", "Visa …NNNN", "XXXX-NNNN") are
+caught by a generic shape pattern, so a card nobody listed is still found; the
+checks report `file:line`, never the digits. Personal proper
 nouns (maintainer handle, private command/project names) are matched against a
 denylist **injected at runtime** — never committed here:
 
@@ -63,7 +80,12 @@ Resolution order: `--denylist` → `$PLUGIN_KIT_DENYLIST` → the per-machine de
 `~/.config/plugin-release-kit/denylist` (`$XDG_CONFIG_HOME` honored). So on a
 machine that has the default file, agents need not be handed a path — it's found
 automatically. The denylist is a newline-separated list of terms (`#` comments
-allowed) and is **never committed** (it's personal). With none found anywhere, the
+allowed) and is **never committed** (it's personal). Every regular, non-hidden
+file in `<denylist>.d/` is read as more terms: point a generator at its own file
+there (for example, account suffixes exported from a ledger) instead of hand-copying
+terms into the denylist. A repo whose tracked demo data must look like a real
+statement lists those files (git glob pathspecs) in a tracked `.privacy-fixtures`;
+they skip only the card-shape check, never the path or denylist checks. With none found anywhere, the
 proper-noun check is skipped with a warning; everything else still runs.
 
 ## Wire the release pipeline into a tool

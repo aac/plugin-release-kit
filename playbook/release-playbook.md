@@ -237,6 +237,13 @@ The shipped surface must be generic and personal-context-free. Default to
 
 - **No absolute personal paths** (`/Users/<x>`, `/home/<x>`) in tracked files —
   use repo-relative or generic placeholders. [check 8]
+- **No card or account-number fragments** — a 4-5 digit tail marked as one
+  ("card ending in NNNN", "Visa …NNNN", "acct #NNNN", "XXXX-NNNN", "Sapphire
+  (NNNN)"). A list of known suffixes can never be complete, so a generic pattern
+  catches the shape; years, ports and ticket ids do not trip it. Files of
+  synthetic data that must look like real statements (demo mail, test fixtures)
+  are declared in a tracked `.privacy-fixtures` file and skip this one pattern.
+  [check 8]
 - **No personal proper nouns** — maintainer handle, private slash-command names,
   private project codenames. These are caught by an injected denylist, never a
   hardcoded list (see Privacy model). Author attribution in `LICENSE`/manifests is
@@ -313,10 +320,24 @@ The verifier's logic is public and must contain **zero personal data**:
 
 - Personal *paths* are matched by generic patterns (`/Users/<x>`, `/home/<x>`)
   that never name a person.
+- Card and account-number *fragments* are matched by a generic shape pattern
+  (see Content hygiene), so a card nobody thought to denylist is still caught.
+  The checks print `file:line` (or the commit), never the matched digits.
 - Personal *proper nouns* are matched against a denylist injected at runtime from
-  `$PLUGIN_KIT_DENYLIST` or `--denylist <file>`, which live outside any public
+  `$PLUGIN_KIT_DENYLIST` or `--denylist <file>` (default
+  `~/.config/plugin-release-kit/denylist`), which live outside any public
   repo. A public reader sees "scans against a configured denylist", never its
   contents.
+- **Generated term lists go in `<denylist>.d/`.** Every regular, non-hidden file
+  in the directory next to the denylist is read as more terms, same format. A
+  generator (say, a script exporting account suffixes from a ledger) owns one
+  file there and rewrites it whenever its source changes, so the hand-kept
+  denylist stays hand-kept and the generated terms never go stale by hand.
+- **`.privacy-fixtures` (tracked, in the checked repo)** lists git glob pathspecs
+  (`fixtures/*.json`, `tests/mail/**`) of files holding synthetic data. Those
+  files skip only the card-shape pattern, in the working tree and in history;
+  home paths and the denylist still apply, so a real known card suffix inside a
+  fixture still fails. There is no per-line allow-marker.
 - The owner/org is *derived* from the target repo's git remote, not hardcoded.
 - Tilde-dir conventions (a personal workspace root and the like) are per-user
   judgment and belong in the denylist, not the public path pattern (which would
@@ -331,7 +352,73 @@ The verifier's logic is public and must contain **zero personal data**:
 - **Flip to public** and announce — always a deliberate human call.
 
 Order when a repave is needed: content pass (verifier green) → `check-history` →
-clean snapshot → recreate remote → push → flip public → announce.
+clean snapshot → recreate remote → push → flip public → announce. For an app repo
+(and the full step list, including the private mirror, worktrees and reflogs),
+see *App repos (not plugins)*.
+
+## App repos (not plugins)
+
+An app, site or library that goes public needs the same privacy gate as a plugin
+but none of the plugin shape (manifests, MCP config, versions). It gets its own
+command:
+
+```sh
+<kit>/bin/verify-public --repo .
+```
+
+It runs exactly the working-tree privacy checks `verify-release` runs ([8] home
+paths and card/account fragments, [9] the denylist, from one shared
+`bin/lib-privacy.sh`), then `check-history` over every commit. Same exit
+contract as `verify-release`: 0 = no FAIL, 1 = a FAIL (or a WARN under
+`--strict`), 2 = usage. It needs a working tree; clone a bare repo first.
+
+- **Every pre-push or pre-release:** run `verify-public`. It is fast enough for a
+  pre-push hook (the kit does not install one for you; a one-line
+  `.git/hooks/pre-push` that runs it is enough).
+- **Before the first public release:** `check-history` is the half that matters.
+  It walks `--all`, so every local branch and worktree branch counts, not only
+  `main`.
+- **Demo data that looks like a statement** (an inbox demo with "card ending
+  NNNN") goes in `.privacy-fixtures`, or the card check fails on it in the tree
+  and in every commit that ever carried it.
+
+**Repave order for an app.** When `check-history` says leaks, the fix is a fresh
+root, not a scrub of old commits. In order:
+
+1. **Content pass.** Forward commits that remove or untrack whatever leaks today
+   (internal reports, personal names, real card tails) until `verify-public`'s
+   [8]/[9] pass on the working tree.
+2. **Private mirror of the old history.** `git clone --mirror` the repo to a
+   local-only path (`<parent>/<repo>-history-pre-repave-<date>.git`) before
+   anything is destroyed. It is the only copy of the old commits afterwards:
+   never push it anywhere, and look old shas up there.
+3. **Snapshot.** One orphan commit whose tree is identical to the cleaned `main`
+   (`git checkout --orphan`, commit, check `git diff <old-main> <new-root>` is
+   empty).
+4. **Recreate the remote.** Deleting and recreating the GitHub repo is a
+   maintainer action (**HUMAN**); a force-push leaves the old commits reachable
+   by sha on the host.
+5. **Push** the new root to the empty remote: `main` only.
+6. **Re-point worktrees and branches.** Rebase each long-lived branch onto the
+   new root (`git rebase --onto <new-root> <old-base> <branch>`), delete or reset
+   the rest, prune stale remote-tracking refs. `check-history` passes only once no
+   ref still reaches an old commit.
+7. **Expire reflogs and gc** in every worktree
+   (`git reflog expire --expire=now --all && git gc --prune=now --aggressive`),
+   then confirm a known leaked string is gone: `git log --all -S'<term>'` prints
+   nothing. Anything that recorded an old sha (a deploy stamp, a pinned ref) needs
+   rewriting to the new one, or it breaks silently once gc removes the old commit.
+8. `verify-public --repo .` exits 0, then flip public (**HUMAN**).
+
+Worked case: inbox-room, repaved 2026-10-23. A real card tail and the
+maintainer's name had reached tracked files; `check-history` found 133 leaking
+commits. The repave above took one session: content pass, a local mirror of all
+136 old commits, one orphan root with a tree identical to the old `main`, a
+remote the maintainer recreated empty, the two worktree branches rebased onto
+the new root, reflogs expired and gc run in all three worktrees, and a live
+deploy stamp rewritten from a gc'd sha. Run against the mirror afterwards,
+`verify-public` fails on the card fragment through the generic pattern alone,
+with every literal card term removed from the denylist.
 
 ## Shipping a tool — the release runbook
 

@@ -33,12 +33,13 @@
 #   --strict        treat WARN as failure too (exit 1 on any WARN)
 #
 # PRIVACY MODEL — this script is public; it must contain zero personal data.
-#   * Personal *paths* are caught by generic patterns (/Users/<x>, /home/<x>)
-#     that never name a person.
+#   * Personal *paths* and card/account-number fragments are caught by generic
+#     patterns that never name a person (lib-privacy.sh, shared with
+#     verify-public and check-history).
 #   * Personal *proper nouns* (maintainer name, GitHub handle, private slash
 #     commands, project codenames) are NOT hardcoded — they are injected at
-#     runtime from --denylist or $PLUGIN_KIT_DENYLIST, which live outside this
-#     repo. A public reader sees "scans against a configured denylist", never
+#     runtime from --denylist or $PLUGIN_KIT_DENYLIST (plus <denylist>.d/),
+#     which live outside this repo. A public reader sees "scans against a configured denylist", never
 #     its contents.
 #   * The repo owner/org is *derived* from the target's git remote, not baked in.
 set -uo pipefail
@@ -71,10 +72,10 @@ KITROOT=$(dirname "$KITBIN")
 # builds from, not a hardcoded copy.
 # shellcheck source=lib-binaries.sh
 . "$KITBIN/lib-binaries.sh"
-# Word-boundary denylist matching, shared with check-history so [9] and the
-# history scan agree on semantics (act-5972d5).
-# shellcheck source=lib-denylist.sh
-. "$KITBIN/lib-denylist.sh"
+# Privacy checks [8]/[9] (patterns, denylist resolution, word-boundary matching),
+# shared with verify-public and check-history so the three cannot drift.
+# shellcheck source=lib-privacy.sh
+. "$KITBIN/lib-privacy.sh"
 # Minimum payload allowlist, shared with stage-payload so [16] and the curation
 # producer read one list and cannot drift (act-c3a9bb).
 # shellcheck source=lib-payload.sh
@@ -350,48 +351,17 @@ PY
 else info "skill-only tool — no binary-into-plugin requirement"; fi
 fi  # end plugin-shape check [7]
 
-echo "[8] no personal paths in shipped (tracked) files"
-# Only UNAMBIGUOUS absolute home paths — never legitimate in a shipped repo.
-# Personal tilde-dir conventions (a personal workspace root, etc.) are per-user
-# judgment and live in the injected denylist, not in this public pattern (which
-# also keeps legit standard paths like ~/.claude / ~/.codex from false-positiving).
-ppat='/Users/[A-Za-z0-9._-]+|/home/[A-Za-z0-9._-]+'
-phits=$(printf '%s\n' "$TRACKED" | while read -r f; do
-  [ -f "$f" ] || continue
-  [[ "$f" == LICENSE* ]] && continue
-  grep -IlnE "$ppat" "$f" 2>/dev/null
-done)
-if [ -z "$phits" ]; then pass "no absolute personal/home paths in tracked files"
-else fail "tracked files contain personal/home paths (use repo-relative or generic placeholders):"; printf '%s\n' "$phits" | sed 's/^/         /'; fi
+echo "[8] no personal paths or card/account fragments in shipped (tracked) files"
+# Generic patterns that never name a person — absolute home paths and card/account
+# number tails. Defined once in lib-privacy.sh, shared with verify-public and
+# check-history. Personal tilde-dir conventions live in the injected denylist.
+priv_check_paths "$TRACKED"
+priv_check_cards "$TRACKED"
 
 echo "[9] no proper-noun leaks (injected denylist)"
-DL="$DENYLIST_FILE"; [ -n "$DL" ] || DL="${PLUGIN_KIT_DENYLIST:-}"
-# Default to the conventional per-machine location so agents need not be handed
-# a path — the denylist is private and never committed, but lives at a known spot.
-[ -n "$DL" ] || DL="${XDG_CONFIG_HOME:-$HOME/.config}/plugin-release-kit/denylist"
-if [ -n "$DL" ] && [ -f "$DL" ]; then
-  terms=$(grep -vE '^\s*(#|$)' "$DL")
-  dhits=""
-  while IFS= read -r t; do
-    [ -n "$t" ] || continue
-    # Word-boundary match (act-5972d5): a short token like "/qcm" must not
-    # substring-match "launcher/qcmd". LC_ALL=C so BSD grep's negated bracket
-    # class behaves under a UTF-8 login locale. -E for the ERE the helper builds.
-    pat=$(dl_word_pattern "$t")
-    h=$(printf '%s\n' "$TRACKED" | while read -r f; do
-      [ -f "$f" ] || continue
-      # Skip files where personal names are legitimate (author attribution).
-      [[ "$f" == LICENSE* ]] && continue
-      [[ "$f" == *.claude-plugin/*.json || "$f" == *.codex-plugin/*.json ]] && continue
-      LC_ALL=C grep -IlE -- "$pat" "$f" 2>/dev/null && break
-    done)
-    [ -n "$h" ] && dhits="$dhits$t -> $(printf '%s' "$h" | tr '\n' ' ')"$'\n'
-  done <<< "$terms"
-  if [ -z "$dhits" ]; then pass "no denylisted proper nouns in tracked files"
-  else fail "tracked files leak denylisted terms:"; printf '%s' "$dhits" | sed 's/^/         /'; fi
-else
-  warn "no denylist configured (--denylist or \$PLUGIN_KIT_DENYLIST) — proper-noun scan skipped"
-fi
+# Resolution (--denylist -> $PLUGIN_KIT_DENYLIST -> per-machine default) and the
+# <denylist>.d/ generated-terms directory both live in lib-privacy.sh.
+priv_check_denylist "$TRACKED" "$(priv_resolve_denylist "$DENYLIST_FILE")"
 
 if [ "$IS_PLUGIN_REPO" = 1 ]; then
 echo "[10] skill description within Codex 1024-char limit"

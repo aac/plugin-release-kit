@@ -12,7 +12,8 @@ whole loop yourself (agent-run end to end); escalate to the human only at the
 gates marked **HUMAN**.
 
 The kit's commands are on `PATH` (via `bin/install`): `verify-release`,
-`check-versions`, `bump-version`, `check-history`, `gen-codex-marketplace`. The
+`verify-public`, `check-versions`, `bump-version`, `check-history`,
+`gen-codex-marketplace`. The
 canonical detail lives in the kit's `playbook/release-playbook.md` — read it for
 anything this skill leaves implicit; it defers to the playbook.
 
@@ -70,9 +71,15 @@ For a still-private tool, steps 1–5 are the whole loop; escalate the human gat
 - **SHA-pin the reusable workflow** (it runs with `contents: write`); adopt kit
   updates by bumping the pin *deliberately* after reading the diff. The drift WARN
   surfaces staleness — it does not auto-fix.
-- **Privacy:** leaks are caught by `verify-release` [8]/[9] (working tree) and
+- **Privacy:** leaks are caught by `verify-release` [8]/[9] (working tree: home
+  paths, card/account fragments, the denylist and its `denylist.d/`) and
   `check-history` (full history); the *first* line is keeping shippable content
   generic while authoring (no personal names/paths/private command names).
+- **Not a plugin?** For an app, site or library going public, run
+  `verify-public --repo .` instead: the same privacy checks plus `check-history`,
+  no manifest/MCP/version checks. Synthetic demo data that looks like a card
+  statement is declared in the repo's `.privacy-fixtures`. The repave order for an
+  app is the playbook's *App repos (not plugins)* section.
 - **Human gates are only:** the privacy repave (only if `check-history` flags it)
   and the flip-to-public. Everything else the agent does.
 
