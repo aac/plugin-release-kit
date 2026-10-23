@@ -207,3 +207,14 @@ printf 'ask %s first\n' "$TERM" > "$r/notes.md"; git -C "$r" add -A && git -C "$
 OUT=$(cd "$WORK" && "$VP" --repo "$r" --denylist dl 2>&1); RC=$?
 assert_rc 1 "relative --denylist: the term is still caught"
 assert_out_has "$TERM -> notes.md" "relative --denylist: [9] read the file"
+
+# --- a hostile tracked filename is reported as data, never run as a sed script ---
+r=$(mkrepo hostile-name)
+evil='a#;w pwned #.md'
+printf 'card ending NNNN\n' | fill > "$r/$evil"
+git -C "$r" add -A && git -C "$r" commit -qm "odd name"
+run "$VP" --repo "$r" --denylist "$EMPTY_DL"
+assert_rc 1 "hostile filename: the card fragment is still reported"
+assert_out_has "$evil:1" "hostile filename: printed verbatim as file:line"
+if ls "$r" | grep -q '^pwned'; then bad "hostile filename: sed 'w' injection wrote a file"
+else ok "hostile filename: no file written by an injected sed command"; fi

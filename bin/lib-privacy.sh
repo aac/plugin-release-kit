@@ -154,7 +154,10 @@ EOF
     [ -f "$f" ] || continue
     [[ "$f" == LICENSE* ]] && continue
     [ -n "$exempt" ] && printf '%s\n' "$exempt" | grep -qxF -- "$f" && continue
-    LC_ALL=C grep -InE -- "$PRIV_CARD_ERE" "$f" 2>/dev/null | cut -d: -f1 | sed "s#^#$f:#"
+    # The filename is data, never part of a sed/awk script (a tracked name with
+    # '#' or ';w <file>' in it would otherwise inject sed commands).
+    LC_ALL=C grep -InE -- "$PRIV_CARD_ERE" "$f" 2>/dev/null | cut -d: -f1 |
+      while IFS= read -r n; do printf '%s:%s\n' "$f" "$n"; done
   done)
   [ -n "$exempt" ] && note=" ($(printf '%s\n' "$exempt" | grep -c .) file(s) declared synthetic in .privacy-fixtures skipped)"
   if [ -z "$hits" ]; then pass "no card/account-number fragments in tracked files$note"
